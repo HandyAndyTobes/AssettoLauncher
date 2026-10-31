@@ -35,6 +35,18 @@ test('gt3Cars finds GT3 by id, class or tag, keeps AI cars for the grid', () => 
   assert.deepEqual(r.models.map(c => c.id).sort(), ['bmw_z4_gt3', 'x_racer', 'y']);
 });
 
+test('gt3Cars leaves out cup and road cars named gt3', () => {
+  const r = gt3Cars([
+    car('ks_porsche_911_gt3_rs', { carClass: 'street' }),
+    car('ks_porsche_911_gt3_cup_2017', { carClass: 'race' }),
+    car('gue_porsche_911_gt3_cup_992', { carClass: 'race' }),
+    car('lrs_porsche_911_992_gt3_cup', { carClass: 'race' }),
+    car('ks_ferrari_488_gt3_2020'),
+    car('bmw_z4_gt3'),
+  ]);
+  assert.deepEqual(r.player.map(c => c.id).sort(), ['bmw_z4_gt3', 'ks_ferrari_488_gt3_2020']);
+});
+
 test('gt3Cars keeps one of x / x_acc / x_evo: newest year, then the plain id', () => {
   const r = gt3Cars([car('bentley_gt3', { year: 2018 }), car('bentley_gt3_acc', { year: 2018 }), car('audi_gt3', { year: 2015 }), car('audi_gt3_evo', { year: 2019 })]);
   assert.deepEqual(r.models.map(c => c.id).sort(), ['audi_gt3_evo', 'bentley_gt3']);

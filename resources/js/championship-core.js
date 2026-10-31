@@ -1,6 +1,6 @@
 // Championships: the parts that don't touch the game, the files or the page
 // (championships.js does those), so they can be tested on their own
-// (tests/championship-core.test.mjs, `node --test tests/`).
+// (tests/championship-core.test.mjs, `node --test tests/*.test.mjs`).
 //
 // A season (data/championships/*.json): { id, name, category, points[], pole,
 // rounds: [{ name, country, tracks: [{ id, layout? } | { match }] }] }.
@@ -55,7 +55,12 @@ export function matchRound(round, tracks) {
 // GT3 cars: by id, ui_car.json class, or tag. player: all of them; models: the
 // ones with AI data, one per model (x, x_acc and x_evo are one model: the
 // newest year wins, then the plain id).
-const isGt3 = c => /gt3/i.test(c.id) || /gt3/i.test(c.carClass || '') || (c.tags || []).some(t => /gt3/i.test(t));
+// Left out: Cup cars (id has a `_cup` part: one-make racers) and road cars (id
+// ends `_rs`, or class "street"). They have "gt3" in their names but aren't
+// GT3 race cars, so they'd fill the grid with the wrong machines.
+const isCup = c => /_cup(_|$)/i.test(c.id);
+const isRoad = c => /_rs$/i.test(c.id) || low(c.carClass) === 'street';
+const isGt3 = c => !isCup(c) && !isRoad(c) && (/gt3/i.test(c.id) || /gt3/i.test(c.carClass || '') || (c.tags || []).some(t => /gt3/i.test(t)));
 const modelKey = id => low(id).replace(/_(acc|evo\d*)$/, '');
 export function gt3Cars(cars) {
   const player = cars.filter(isGt3);
