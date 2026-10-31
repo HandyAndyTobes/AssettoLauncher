@@ -273,11 +273,13 @@ async function opponentEntries(paths, { car, skin, skins }, ai) {
   return entries;
 }
 
-// A grid of other cars: [{ car, skin }], named like opponentEntries names them.
+// A grid of other cars: [{ car, skin, name?, nation?, level? }], named like opponentEntries names them unless they have a name.
 async function gridEntries(paths, grid, ai) {
   const names = shuffle(await driverNames(paths.ac.install));
   const entries = [];
   for (const [i, g] of grid.entries()) {
+    // A championship's grid brings its own drivers (championships.js).
+    if (g.name) { entries.push({ car: g.car, skin: g.skin, name: g.name, nation: g.nation || '', level: g.level ?? 100, aggression: ai.aggression }); continue; }
     let name = '', nation = '';
     try {
       const j = JSON.parse(await readText(join(paths.ac.content, 'cars', g.car, 'skins', g.skin, 'ui_skin.json')) || 'null');

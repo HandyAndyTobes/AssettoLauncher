@@ -136,6 +136,8 @@ export async function scanAcCars(paths) {
     const skins = (await listDir(join(dir, 'skins'))).filter(e => e.type === 'DIRECTORY').map(e => e.entry).sort();
     const kunosId = d.entry.startsWith('ks_') || AC_KUNOS_CARS.has(d.entry);
     const isMod = ui.author ? !isKunosAuthor(ui.author) : !kunosId;
+    // Opponents need the car's AI data (data.acd packs it; unpacked cars have data/ai.ini).
+    const ai = (await exists(join(dir, 'data.acd'))) || (await exists(join(dir, 'data/ai.ini')));
     return {
       id: d.entry, kind: 'car', game: 'ac',
       title: cleanText(ui.name) || prettifyId(d.entry),
@@ -151,6 +153,7 @@ export async function scanAcCars(paths) {
       specs: ui.specs || null,
       year: ui.year || '', brand: cleanText(ui.brand) || '',
       country: ui.country || '',
+      carClass: cleanText(ui.class) || '', ai,
       isMod, enabled: true, path: dir,
       skins: skins.map(s => ({ id: s, image: fileUrl(join(dir, 'skins', s, 'preview.jpg')), livery: fileUrl(join(dir, 'skins', s, 'livery.png')) })),
     };
