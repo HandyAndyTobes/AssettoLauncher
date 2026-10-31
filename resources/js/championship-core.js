@@ -53,23 +53,47 @@ export function matchRound(round, tracks) {
 }
 
 // GT3 cars: by id, ui_car.json class, or tag. player: all of them; models: the
-// ones with AI data, one per model (x, x_acc and x_evo are one model: the
-// newest year wins, then the plain id).
-// Left out: Cup cars (id has a `_cup` part: one-make racers) and road cars (id
-// ends `_rs`, or class "street"). They have "gt3" in their names but aren't
+// ones with AI data, one per model (x, x_acc and x_evo are one model, and so are
+// cars with the same title or the same id words in another order, which is the
+// same mod installed under two folder names: the newest year wins, then the
+// shorter id).
+// Tags are matched exactly, not by substring: Kunos puts a "#GTE-GT3" category
+// tag on its GT2/GTE cars (Ferrari 458 GT2, Corvette C7.R...), so "contains gt3"
+// would let them in. A real GT3 car has a tag that is just "gt3" / "#gt3", or
+// "gt3" in its id (some have only one of the two). Any "gt2" / "gte" tag rules a
+// car out.
+// Also left out: Cup cars (id has a `_cup` part: one-make racers) and road cars
+// (id ends `_rs`, or class "street"). They have "gt3" in their names but aren't
 // GT3 race cars, so they'd fill the grid with the wrong machines.
 const isCup = c => /_cup(_|$)/i.test(c.id);
 const isRoad = c => /_rs$/i.test(c.id) || low(c.carClass) === 'street';
-const isGt3 = c => !isCup(c) && !isRoad(c) && (/gt3/i.test(c.id) || /gt3/i.test(c.carClass || '') || (c.tags || []).some(t => /gt3/i.test(t)));
+const tagIs = (c, name) => (c.tags || []).some(t => low(String(t).replace(/^#/, '')) === name);
+const isGt3 = c => !isCup(c) && !isRoad(c) && !tagIs(c, 'gt2') && !tagIs(c, 'gte')
+  && (tagIs(c, 'gt3') || /gt3/i.test(c.id) || low(c.carClass) === 'gt3');
 const modelKey = id => low(id).replace(/_(acc|evo\d*)$/, '');
+const titleKey = c => low(c.title).replace(/[^a-z0-9]/g, '');
+// Same words in another order (bm_amg_evo_2020_gt3 / bm_amg_evo_gt3_2020), when
+// the two copies carry differently worded titles.
+const idLetters = c => [...modelKey(c.id).replace(/[^a-z0-9]/g, '')].sort().join('');
 export function gt3Cars(cars) {
   const player = cars.filter(isGt3);
+  const withAi = player.filter(c => c.ai);
+  // Cars sharing a modelKey or a title are one model: group them (union-find).
+  const parent = withAi.map((_, i) => i);
+  const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const seen = new Map();
+  withAi.forEach((c, i) => {
+    for (const k of [`id:${modelKey(c.id)}`, `letters:${idLetters(c)}`, titleKey(c) && `title:${titleKey(c)}`]) {
+      if (!k) continue;
+      if (seen.has(k)) parent[find(i)] = find(seen.get(k)); else seen.set(k, i);
+    }
+  });
   const best = new Map();
-  for (const c of player.filter(c => c.ai)) {
-    const k = modelKey(c.id), had = best.get(k);
+  withAi.forEach((c, i) => {
+    const g = find(i), had = best.get(g);
     const newer = !had || Number(c.year) > Number(had.year) || (Number(c.year) === Number(had.year) && c.id.length < had.id.length);
-    if (newer) best.set(k, c);
-  }
+    if (newer) best.set(g, c);
+  });
   return { player, models: [...best.values()] };
 }
 

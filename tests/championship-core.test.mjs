@@ -52,6 +52,27 @@ test('gt3Cars keeps one of x / x_acc / x_evo: newest year, then the plain id', (
   assert.deepEqual(r.models.map(c => c.id).sort(), ['audi_gt3_evo', 'bentley_gt3']);
 });
 
+test('gt3Cars leaves out GT2/GTE cars carrying the #GTE-GT3 category tag', () => {
+  const r = gt3Cars([
+    car('ferrari_458_gt2', { tags: ['#GTE-GT3', 'gt', 'gt2'] }),
+    car('ks_corvette_c7r', { tags: ['#GTE-GT3', 'gt2'] }),
+    car('ks_audi_r8_lms', { tags: ['gt3'] }),
+    car('ks_ferrari_488_gt3_2020', { tags: [] }),
+  ]);
+  assert.deepEqual(r.player.map(c => c.id).sort(), ['ks_audi_r8_lms', 'ks_ferrari_488_gt3_2020']);
+});
+
+test('gt3Cars counts the same mod under two folder names as one model', () => {
+  const r = gt3Cars([car('bm_amg_evo_2020_gt3', { title: 'AMG GT3 EVO 2020' }), car('bm_amg_evo_gt3_2020', { title: 'AMG GT3 Evo 2020' })]);
+  assert.equal(r.player.length, 2);
+  assert.equal(r.models.length, 1);
+});
+
+test('gt3Cars counts folder names with the same words in another order as one model', () => {
+  const r = gt3Cars([car('bm_amg_evo_2020_gt3', { title: 'ACF GT3 - Mercedes-AMG GT3 EVO 2020' }), car('bm_amg_evo_gt3_2020', { title: 'ACF GT3 - AMG GT3 EVO 2020' }), car('ng_lexus_rcf_gt3')]);
+  assert.equal(r.models.length, 2);
+});
+
 test('raceLaps turns minutes into laps from the track length', () => {
   assert.equal(raceLaps(30, '5793 m'), 15);  // 30 min at 175 km/h = 87.5 km / 5.793 = 15.1
   assert.equal(raceLaps(30, '7.0 km'), 13);  // 12.5 rounds up
