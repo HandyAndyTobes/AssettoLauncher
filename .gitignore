@@ -19,3 +19,6 @@ docs/screenshots/
 
 # Python bytecode from tools/
 __pycache__/
+
+# Brainstorming companion mockups
+.superpowers/
