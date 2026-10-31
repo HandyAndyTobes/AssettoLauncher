@@ -14,7 +14,7 @@
 //          all text ("Brakes.BrakesMain.FrontBias" = "0.445000"). Rally doesn't
 //          remember which setup is loaded: the player loads one in Car Setup.
 // A setup: { key, game, car, track, name, author, date (ms), version, file, extra, values: [[key, value]] }
-import { join, basename, listDir, readTextAnyEncoding, writeText, exists, log, prettifyId, mapLimit, storageGet, storageSet } from './util.js';
+import { join, basename, listDir, readTextAnyEncoding, readRaceOut, readLapsIni, writeText, exists, log, prettifyId, mapLimit, storageGet, storageSet } from './util.js';
 import { tr } from './i18n.js';
 import { ACC_TRACKS } from './acclaunch.js';
 import { rallySetupText } from './rallydata.js';
@@ -434,14 +434,17 @@ export function runsOf(s, all) {
 // lap, 0 when none), laps, values (the setup it was driven with) } or null.
 export async function readAcRun(paths, since) {
   const docs = paths.ac.cfg.replace(/\/[^/]+$/, '');
-  const file = join(docs, 'out/race_out.json');
-  if ((await fileDate(file)) < since) return null;
-  let out = null;
-  try { out = JSON.parse((await readTextAnyEncoding(file)) || 'null'); } catch { /* not written yet */ }
+  const out = await readRaceOut(join(docs, 'out/race_out.json'), since);
   const car = out?.players?.[0]?.car;
   if (!car) return null;
-  const laps = (out.sessions || []).flatMap(s => s.laps || []).filter(l => (l.car ?? 0) === 0 && l.time > 0);
-  const valid = laps.filter(l => !l.cuts).map(l => l.time);
+  let laps = (out.sessions || []).flatMap(s => s.laps || []).filter(l => (l.car ?? 0) === 0 && l.time > 0);
+  let valid = laps.filter(l => !l.cuts).map(l => l.time);
+  if (!laps.length) {
+    const times = await readLapsIni(join(docs, 'out/laps.ini'), since);
+    laps = times.map(time => ({ car: 0, time }));
+    const best = Number((out.extras || []).find(x => x.name === 'bestlap')?.time) || 0;
+    valid = times.length ? [best || Math.min(...times)] : [];
+  }
   const track = String(out.track || '');
   let values = [];
   for (const folder of [track.split('-')[0], 'generic']) {

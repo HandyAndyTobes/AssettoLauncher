@@ -22,7 +22,7 @@
 //   sessions[] { type, lapsCount, laps[] { car, time, cuts }, lapstotal[] (laps per
 //   car), raceResult[] (car indices in finishing order) }, extras[] { name:
 //   bestlap | timeattack | drift | drag, time | points | wins }.
-import { join, readText, readTextAnyEncoding, writeText, listDir, exists, fileUrl, mountDir, cleanText, storageGet, storageSet, mapLimit, log } from './util.js';
+import { join, readText, readRaceOut, readLapsIni, writeText, listDir, exists, fileUrl, mountDir, cleanText, storageGet, storageSet, mapLimit, log } from './util.js';
 import { parseIni, setIni, removeSections } from './ini.js';
 import { TEMPLATE, startAcs } from './quickdrive.js';
 import { lapTime } from './bests.js';
@@ -307,20 +307,30 @@ export async function writeAcEvent(paths, ev, { ai = 0, opponents = null } = {})
 // The player's result from race_out.json, if AC wrote it after `since`:
 // { ms, pos, points, wins, laps, finished, order (car indices), names }.
 export async function readAcResult(paths, ev, since) {
-  const file = join(paths.ac.cfg.replace(/\/[^/]+$/, ''), 'out/race_out.json');
-  if ((await fileDate(file)) < since) return null;
-  let out = null;
-  try { out = JSON.parse((await readTextAnyEncoding(file)) || 'null'); } catch { return null; }
-  if (!out?.sessions?.length) return null;
+  const outDir = join(paths.ac.cfg.replace(/\/[^/]+$/, ''), 'out');
+  const out = await readRaceOut(join(outDir, 'race_out.json'), since);
+  if (!out?.sessions?.length) { if (out) log(`academy ${ev.key}: race_out.json has no sessions`); return null; }
   const want = { qualify: 2, race: 3, weekend: 3, hotlap: 4, timeattack: 5, drift: 6, drag: 7 }[ev.kind];
-  const session = [...out.sessions].reverse().find(s => num(s.type) === want) || out.sessions[out.sessions.length - 1];
+  let session = [...out.sessions].reverse().find(s => num(s.type) === want);
+  if (!session) {
+    session = out.sessions[out.sessions.length - 1];
+    log(`academy ${ev.key}: no type ${want} session in race_out.json (types ${out.sessions.map(s => s.type).join(', ')}), reading the last`);
+  }
   const extra = name => (out.extras || []).find(x => x.name === name) || {};
-  const mine = (session.laps || []).filter(l => (l.car ?? 0) === 0 && l.time > 0);
-  const valid = mine.filter(l => !l.cuts).map(l => l.time);
+  let mine = (session.laps || []).filter(l => (l.car ?? 0) === 0 && l.time > 0);
+  let valid = mine.filter(l => !l.cuts).map(l => l.time);
+  if (!mine.length && ev.kind !== 'qualify') {
+    const times = await readLapsIni(join(outDir, 'laps.ini'), since);
+    if (times.length) {
+      log(`academy ${ev.key}: race_out.json has no laps, read ${times.length} from laps.ini`);
+      mine = times.map(time => ({ car: 0, time }));
+      valid = [num(extra('bestlap').time) || Math.min(...times)];
+    }
+  }
   const r = { laps: mine.length, names: (out.players || []).map(p => p.name) };
   if (ev.kind === 'race' || ev.kind === 'weekend') {
     const order = session.raceResult || [];
-    const done = (session.lapstotal || [])[0] ?? mine.length;
+    const done = Math.max(num((session.lapstotal || [])[0]), mine.length);
     r.order = order;
     r.finished = !session.lapsCount || done >= session.lapsCount;
     r.pos = r.finished && order.includes(0) ? order.indexOf(0) + 1 : 0;

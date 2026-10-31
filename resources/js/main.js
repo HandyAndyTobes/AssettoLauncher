@@ -4526,7 +4526,7 @@ async function academyClosed(game, l) {
   let r = null;
   if (game === 'ac') {
     r = await readAcResult(state.paths, ev, l.at - 5000);
-    if (!r || (!r.laps && !r.points && !r.wins && !r.pos)) r = null;
+    if (r && !r.laps && !r.points && !r.wins && !r.pos) { log(`academy ${ev.key}: race_out.json has no laps for the player (${r.names?.[0] || 'no players'})`); r = null; }
   } else if (game === 'evo' && ev.kind === 'sprint') {
     r = await readEvoSprint(join(state.paths.evo.profiles.replace(/\/[^/]+$/, ''), 'Logs'), ev, l.at - 5000);
     // Runs already saved and shown over EVO (academyWatch) aren't saved again.

@@ -50,6 +50,43 @@ export async function readTextAnyEncoding(path) {
   } catch { return null; }
 }
 
+// Assetto Corsa's results (Documents\Assetto Corsa\out\race_out.json), once AC
+// has written them after `since`, or null. AC writes the file as it closes; this
+// waits a few seconds in case it lands after the process is gone, or is read
+// half written. Numbers AC can't write (nan, inf, 1.#INF) are read as 0, trailing
+// commas dropped. Why there's none goes to the log, and a file that doesn't read
+// is kept as race_out.unread.json beside it.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const BAD_NUMBER = /([:[,]\s*)-?(?:nan(?:\((?:ind|snan)\))?|inf(?:inity)?|1\.#(?:inf|ind|qnan|snan)\d*)(?=\s*[,\]}])/gi;
+export async function readRaceOut(file, since) {
+  let date = 0, text = null;
+  for (let i = 0; i < 8; i++) {
+    if (i) await sleep(1000);
+    try { date = (await Neutralino.filesystem.getStats(norm(file))).modifiedAt || 0; } catch { date = 0; }
+    if (date < since) continue;
+    text = await readTextAnyEncoding(file);
+    if (!text) continue;
+    text = text.replace(/^﻿/, '');
+    try { return JSON.parse(text); } catch { /* AC's own JSON quirks */ }
+    try { return JSON.parse(text.replace(BAD_NUMBER, '$10').replace(/,\s*([}\]])/g, '$1')); } catch { /* still being written? */ }
+  }
+  if (date < since) { log(`race_out.json: not written since the start (${date ? new Date(date).toISOString() : 'no file'})`); return null; }
+  log(`race_out.json: not readable (${text ? `${text.length} chars` : 'empty'}), kept as race_out.unread.json`);
+  if (text) await writeText(file.replace(/race_out\.json$/i, 'race_out.unread.json'), text).catch(() => {});
+  return null;
+}
+
+// The player's lap times (ms) from Assetto Corsa's out\laps.ini, if AC wrote it
+// after `since`, else []. AC sometimes writes race_out.json with a session's laps
+// and lapstotal empty while laps.ini beside it has them. It doesn't say which cut.
+export async function readLapsIni(file, since) {
+  let date = 0;
+  try { date = (await Neutralino.filesystem.getStats(norm(file))).modifiedAt || 0; } catch { /* no file */ }
+  if (date < since) return [];
+  const text = (await readTextAnyEncoding(file)) || '';
+  return [...text.matchAll(/\[LAP_\d+\][^[]*?^\s*TIME\s*=\s*(\d+)/gim)].map(m => Number(m[1])).filter(t => t > 0);
+}
+
 // Kunos ui_*.json files are frequently invalid JSON: raw newlines/tabs inside
 // strings, trailing commas, BOMs. Escape control chars inside strings, drop
 // trailing commas, then fall back to regex field extraction.
