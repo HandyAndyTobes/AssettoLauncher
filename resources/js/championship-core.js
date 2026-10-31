@@ -106,3 +106,50 @@ export function buildGrid(models, { size, level, rand = Math.random }) {
     return { name, nation, model: m.id, skin: skins[(firstSkin.get(m.id) + k) % skins.length], level: Math.min(100, Math.round(level - 3 + rand() * 6)) };
   });
 }
+
+// Car index (race_out.json: 0 the player, 1..n the grid in race.ini order) to name.
+const nameOf = (active, car) => (car === 0 ? PLAYER : active.grid[car - 1]?.name || `#${car}`);
+
+// The fastest in a qualifying session: its bestLaps, else its laps (cut laps don't count).
+function poleOf(active, quali) {
+  const laps = quali?.bestLaps?.length ? quali.bestLaps : (quali?.laps || []).filter(l => !l.cuts);
+  const best = laps.filter(l => l.time > 0).sort((a, b) => a.time - b.time)[0];
+  return best ? nameOf(active, best.car) : '';
+}
+
+// A round's result from race_out.json, or null and why. A race counts when its
+// leader covered the race's laps (otherwise the player left early and AC ended
+// the session) and the player is in the result within 2 laps of the leader.
+export function scoreRound(season, active, out, round) {
+  const sessions = out?.sessions || [];
+  const race = [...sessions].reverse().find(s => Number(s.type) === 3);
+  if (!race) return { result: null, reason: 'no race session in race_out.json' };
+  const order = race.raceResult || [];
+  const laps = race.lapstotal || [];
+  const leader = laps[order[0]] || 0;
+  if (!order.length || leader < (race.lapsCount || 1)) return { result: null, reason: `race not finished (leader ${leader} of ${race.lapsCount} laps)` };
+  if (!order.includes(0) || (laps[0] || 0) < leader - 2) return { result: null, reason: `race not finished (you did ${laps[0] || 0} of ${leader} laps)` };
+  const quali = [...sessions].reverse().find(s => Number(s.type) === 2);
+  const pole = poleOf(active, quali);
+  const pos = order.indexOf(0) + 1;
+  const points = (season.points[pos - 1] || 0) + (pole === PLAYER ? season.pole || 0 : 0);
+  return { result: { round, pos, pole, points, order: order.map(c => nameOf(active, c)), at: Date.now() }, reason: '' };
+}
+
+// Everyone's points over the saved rounds, best first: more points, then more
+// wins, then the better best finish.
+export function standings(season, active) {
+  const rows = new Map([[PLAYER, { name: PLAYER, car: active.car, points: 0, wins: 0, best: 99, player: true }]]);
+  for (const g of active.grid) rows.set(g.name, { name: g.name, car: g.model, points: 0, wins: 0, best: 99, player: false });
+  for (const r of active.results || []) {
+    r.order.forEach((name, i) => {
+      const row = rows.get(name);
+      if (!row) return;
+      row.points += season.points[i] || 0;
+      if (i === 0) row.wins++;
+      row.best = Math.min(row.best, i + 1);
+    });
+    if (rows.has(r.pole)) rows.get(r.pole).points += season.pole || 0;
+  }
+  return [...rows.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || a.best - b.best);
+}

@@ -80,3 +80,56 @@ test('buildGrid gives every model one car before any gets a second', () => {
   const grid = buildGrid(['a', 'b', 'c', 'd'].map(id => car(id)), { size: 5, level: 90, rand: Math.random });
   assert.equal(new Set(grid.map(g => g.model)).size, 4);
 });
+
+import { scoreRound, standings, PLAYER } from '../resources/js/championship-core.js';
+
+const season = { points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], pole: 1 };
+const active = { car: 'my_gt3', grid: [{ name: 'A', model: 'a' }, { name: 'B', model: 'b' }, { name: 'C', model: 'c' }], results: [] };
+// race_out.json as AC writes it: car 0 is the player, 1..n the grid in order.
+const out = ({ order = [1, 0, 2, 3], lapstotal = [10, 10, 10, 9], lapsCount = 10, quali = [{ car: 2, time: 99000 }, { car: 0, time: 99500 }] } = {}) => ({
+  sessions: [
+    { type: 2, name: 'Qualifying', lapsCount: 0, laps: [], lapstotal: [], bestLaps: quali, raceResult: [] },
+    { type: 3, name: 'Race', lapsCount, laps: [], lapstotal, bestLaps: [], raceResult: order },
+  ],
+});
+
+test('scoreRound: finishing places, points and the pole point', () => {
+  const { result } = scoreRound(season, active, out(), 0);
+  assert.equal(result.pos, 2);
+  assert.equal(result.points, 18);
+  assert.equal(result.pole, 'B');
+  assert.deepEqual(result.order, ['A', PLAYER, 'B', 'C']);
+});
+
+test('scoreRound: the player on pole gets the point', () => {
+  const { result } = scoreRound(season, active, out({ quali: [{ car: 0, time: 98000 }, { car: 1, time: 99000 }] }), 0);
+  assert.equal(result.points, 19);
+});
+
+test('scoreRound: a lapped player still finishes; a quit does not', () => {
+  // lapstotal[0] is the player; the leader is car 1 with 10 laps.
+  assert.ok(scoreRound(season, active, out({ lapstotal: [8, 10, 10, 9] }), 0).result);      // 2 laps down
+  assert.equal(scoreRound(season, active, out({ lapstotal: [7, 10, 10, 9] }), 0).result, null); // 3 down
+  const quit = scoreRound(season, active, out({ lapstotal: [4, 4, 4, 4] }), 0);              // leader short of 10
+  assert.equal(quit.result, null);
+  assert.match(quit.reason, /not finished/);
+});
+
+test('scoreRound: no race session, or no qualifying', () => {
+  assert.equal(scoreRound(season, active, { sessions: [] }, 0).result, null);
+  const noQ = out();
+  noQ.sessions.shift();
+  assert.equal(scoreRound(season, active, noQ, 0).result.pole, '');
+});
+
+test('standings: points, wins, then best finish', () => {
+  const a = { ...active, results: [
+    { round: 0, order: ['A', PLAYER, 'B', 'C'], pole: 'B' },
+    { round: 1, order: [PLAYER, 'A', 'C', 'B'], pole: PLAYER },
+  ] };
+  const rows = standings(season, a);
+  assert.deepEqual(rows.map(r => [r.name, r.points, r.wins]), [[PLAYER, 44, 1], ['A', 43, 1], ['B', 28, 0], ['C', 27, 0]]);
+  assert.equal(rows[0].player, true);
+  assert.equal(rows[0].car, 'my_gt3');
+  assert.equal(rows[1].car, 'a');
+});
