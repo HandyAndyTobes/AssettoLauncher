@@ -6932,7 +6932,7 @@ async function runSnapshots(dir) {
     await ensureDir(`${sb}/cfg`);
     await writeText(`${sb}/cfg/race.ini`, '[RACE]\r\n');
     const first = nextRoundIndex(a);
-    await startRound({ ...state.paths, ac: { ...state.paths.ac, cfg: `${sb}/cfg` } }, a, first, tracks).catch(err => log(`check-champ start: ${err.message}`));
+    await startRound({ ...state.paths, ac: { ...state.paths.ac, cfg: `${sb}/cfg` } }, a, first, tracks, { start: false }).catch(err => log(`check-champ start: ${err.message}`));
     log(`check-champ race.ini: ${String(await readText(`${sb}/cfg/race.ini`)).replace(/\r?\n/g, ' | ').slice(0, 1500)}`);
     // A finished race and a quit one, in race_out.json's shape.
     const n = a.grid.length + 1, order = [...Array(n).keys()].sort(() => Math.random() - 0.5);

@@ -43,8 +43,8 @@ export function nextRoundIndex(active) {
 
 // race.ini for round `index` and AC started. The race is set in laps for about
 // the season's minutes; the grid is cut to the track's pit boxes (AC can't
-// place more cars than it has).
-export async function startRound(paths, active, index, tracks) {
+// place more cars than it has). start: false writes race.ini only (the self-test).
+export async function startRound(paths, active, index, tracks, { start = true } = {}) {
   const round = active.rounds[index];
   const track = tracks.find(t => t.id === round.track);
   const layout = track?.layouts.find(l => l.id === round.layout);
@@ -63,6 +63,6 @@ export async function startRound(paths, active, index, tracks) {
   log(`championship round ${index + 1} ${round.track}/${round.layout}: ${laps} laps, grid ${grid.length}`);
   await quickDrive(paths, {
     car: active.car, skin: active.skin, track: round.track, layout: round.layout, session,
-    maxOpponents: grid.length, csp, grid: grid.map(g => ({ car: g.model, skin: g.skin, name: g.name, nation: g.nation, level: g.level })),
+    maxOpponents: grid.length, csp, grid: grid.map(g => ({ car: g.model, skin: g.skin, name: g.name, nation: g.nation, level: g.level })), start,
   });
 }
