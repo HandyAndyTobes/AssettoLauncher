@@ -151,6 +151,34 @@ test('scoreRound: no race session, or no qualifying', () => {
   assert.equal(scoreRound(season, active, noQ, 0).result.pole, '');
 });
 
+// AC sometimes writes the race session with lapstotal (and laps) empty.
+const lapsOf = counts => counts.flatMap((n, car) => Array.from({ length: n }, () => ({ car, time: 100000, cuts: 0 })));
+
+test('scoreRound: empty lapstotal, laps counted from the laps list', () => {
+  const o = out({ lapstotal: [] });
+  o.sessions[1].laps = lapsOf([10, 10, 10, 9]);
+  const { result } = scoreRound(season, active, o, 0);
+  assert.ok(result);
+  assert.equal(result.pos, 2);
+  assert.equal(result.points, 18);
+  const short = out({ lapstotal: [] });
+  short.sessions[1].laps = lapsOf([4, 4, 4, 4]);
+  assert.equal(scoreRound(season, active, short, 0).result, null);
+});
+
+test('scoreRound: empty lapstotal and laps, the player\'s laps.ini count finishes it', () => {
+  const { result } = scoreRound(season, active, out({ lapstotal: [] }), 0, 10);
+  assert.ok(result);
+  assert.equal(result.pos, 2);
+});
+
+test('scoreRound: empty everything and 3 of 10 laps in laps.ini is not finished', () => {
+  const r = scoreRound(season, active, out({ lapstotal: [] }), 0, 3);
+  assert.equal(r.result, null);
+  assert.match(r.reason, /not finished/);
+  assert.equal(scoreRound(season, active, out({ lapstotal: [] }), 0).result, null);
+});
+
 test('standings: points, wins, then best finish', () => {
   const a = { ...active, results: [
     { round: 0, order: ['A', PLAYER, 'B', 'C'], pole: 'B' },

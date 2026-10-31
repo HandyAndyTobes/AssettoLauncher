@@ -145,14 +145,28 @@ function poleOf(active, quali) {
 // A round's result from race_out.json, or null and why. A race counts when its
 // leader covered the race's laps (otherwise the player left early and AC ended
 // the session) and the player is in the result within 2 laps of the leader.
-export function scoreRound(season, active, out, round) {
+// AC sometimes writes the race session with lapstotal empty (and at times its
+// laps list too; util.js readLapsIni, academy.js readAcResult): then each car's
+// laps are counted from `laps`, and `playerLaps` (the laps in out/laps.ini,
+// read by the caller) stands in for the player's. With no count for anyone, the
+// race counts only if the player is in the result and did about all its laps.
+export function scoreRound(season, active, out, round, playerLaps = 0) {
   const sessions = out?.sessions || [];
   const race = [...sessions].reverse().find(s => Number(s.type) === 3);
   if (!race) return { result: null, reason: 'no race session in race_out.json' };
   const order = race.raceResult || [];
-  const laps = race.lapstotal || [];
-  const leader = laps[order[0]] || 0;
-  if (!order.length || leader < (race.lapsCount || 1)) return { result: null, reason: `race not finished (leader ${leader} of ${race.lapsCount} laps)` };
+  const total = race.lapsCount || 1;
+  let laps = (race.lapstotal || []).map(Number);
+  if (!laps.some(n => n > 0)) {
+    laps = [];
+    for (const l of race.laps || []) { const c = Number(l.car ?? 0); laps[c] = (laps[c] || 0) + 1; }
+  }
+  if (!(laps[0] > 0) && playerLaps > 0) laps[0] = playerLaps;
+  if (!laps.some(n => n > 0)) return { result: null, reason: 'race not finished (no lap counts in race_out.json)' };
+  // Only the player's laps known (laps.ini): no leader's count to check against.
+  const onlyPlayer = laps.every((n, c) => c === 0 || !(n > 0));
+  const leader = onlyPlayer ? total : laps[order[0]] || 0;
+  if (!order.length || (!onlyPlayer && leader < total)) return { result: null, reason: `race not finished (leader ${leader} of ${race.lapsCount} laps)` };
   if (!order.includes(0) || (laps[0] || 0) < leader - 2) return { result: null, reason: `race not finished (you did ${laps[0] || 0} of ${leader} laps)` };
   const quali = [...sessions].reverse().find(s => Number(s.type) === 2);
   const pole = poleOf(active, quali);

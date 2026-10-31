@@ -25,7 +25,7 @@ import { lobbyList, serverInfo, serverSlots, serverTrack, trackFinder, serverNam
 import { loadSeasons, champProgress, saveChampProgress, newSeason, nextRoundIndex, startRound } from './championships.js';
 import { matchRound, gt3Cars, raceLaps, standings as champStandings, scoreRound, PLAYER } from './championship-core.js';
 import { latestRelease, isNewer, isInstalledCopy, installUpdate } from './appupdate.js';
-import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, readRaceOut, CURL, NULL_DEV, IS_LINUX } from './util.js';
+import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, readRaceOut, readLapsIni, CURL, NULL_DEV, IS_LINUX } from './util.js';
 import { tr, trn, N_, loadLanguage, systemLanguage, LANGUAGES, lang } from './i18n.js';
 
 // tr() for HTML: the values filled in ({name}, {version}…) are escaped, since names
@@ -5160,8 +5160,16 @@ async function championshipClosed(l) {
   const season = (await chSeasons()).find(s => s.id === a.seasonId);
   if (!season) return;
   const index = l.championship.round;
-  const out = await readRaceOut(join(state.paths.ac.cfg.replace(/\/[^/]+$/, ''), 'out/race_out.json'), l.at - 5000);
-  const { result, reason } = out ? scoreRound(season, a, out, index) : { result: null, reason: 'no race_out.json' };
+  const docs = state.paths.ac.cfg.replace(/\/[^/]+$/, '');
+  const out = await readRaceOut(join(docs, 'out/race_out.json'), l.at - 5000);
+  // AC's quirk: a race session with lapstotal and laps empty; laps.ini has the player's.
+  const race = [...(out?.sessions || [])].reverse().find(s => Number(s.type) === 3);
+  let playerLaps = 0;
+  if (race && !(race.lapstotal || []).some(n => Number(n) > 0) && !(race.laps || []).length) {
+    playerLaps = (await readLapsIni(join(docs, 'out/laps.ini'), l.at - 5000)).length;
+    log(`championship round ${index + 1}: race_out.json has no lap counts, laps.ini has ${playerLaps}`);
+  }
+  const { result, reason } = out ? scoreRound(season, a, out, index, playerLaps) : { result: null, reason: 'no race_out.json' };
   log(`championship round ${index + 1}: ${result ? `P${result.pos}, ${result.points} pts` : reason}`);
   if (!result) {
     toast(tr('Race not finished: round {n} can be run again.', { n: index + 1 }), true);
