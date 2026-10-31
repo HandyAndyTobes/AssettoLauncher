@@ -6914,6 +6914,41 @@ async function runSnapshots(dir) {
     await Neutralino.app.exit();
     return;
   }
+  // --check-championships: the season's track matches, the GT3 cars and a grid,
+  // race.ini for round 1 written to a sandbox, a scored sample race, and the
+  // page with no season, mid-season and finished. The real progress is put back.
+  if ((window.NL_ARGS || []).includes('--check-championships')) {
+    const g = gameByKey('ac');
+    const [season] = await chSeasons();
+    const tracks = await getItems(g, 'tracks'), cars = await getItems(g, 'cars');
+    season.rounds.forEach((r, i) => { const m = matchRound(r, tracks); log(`check-champ round ${i + 1} ${r.name}: ${m.best ? `${m.best.track}/${m.best.layout}` : 'missing'} (${m.options.length} options)`); });
+    const gt3 = gt3Cars(cars);
+    log(`check-champ gt3: ${gt3.player.length} cars, ${gt3.models.length} models with AI: ${gt3.models.map(c => c.id).join(', ')}`);
+    const saved = await champProgress();
+    const rounds = season.rounds.map(r => { const b = matchRound(r, tracks).best; return { name: r.name, track: b?.track || '', layout: b?.layout || '', dropped: !b }; });
+    const a = newSeason(season, { car: gt3.player[0].id, skin: gt3.player[0].skins[0]?.id || '', rounds, models: gt3.models, settings: { gridSize: 20, level: 90, aggression: 30, raceMinutes: 30, practice: true } });
+    log(`check-champ grid: ${a.grid.map(x => `${x.name}/${x.model}/${x.level}`).join(', ')}`);
+    const sb = `${norm(dir)}/champ-sandbox`;
+    await ensureDir(`${sb}/cfg`);
+    await writeText(`${sb}/cfg/race.ini`, '[RACE]\r\n');
+    const first = nextRoundIndex(a);
+    await startRound({ ...state.paths, ac: { ...state.paths.ac, cfg: `${sb}/cfg` } }, a, first, tracks).catch(err => log(`check-champ start: ${err.message}`));
+    log(`check-champ race.ini: ${String(await readText(`${sb}/cfg/race.ini`)).replace(/\r?\n/g, ' | ').slice(0, 1500)}`);
+    // A finished race and a quit one, in race_out.json's shape.
+    const n = a.grid.length + 1, order = [...Array(n).keys()].sort(() => Math.random() - 0.5);
+    const race = (laps, lead) => ({ sessions: [{ type: 2, bestLaps: [{ car: order[0], time: 100000 }] }, { type: 3, lapsCount: 15, lapstotal: Array(n).fill(laps).map((v, i) => (i === order[0] ? lead : v)), raceResult: order }] });
+    log(`check-champ finished: ${JSON.stringify(scoreRound(season, a, race(15, 15), first))}`);
+    log(`check-champ quit: ${JSON.stringify(scoreRound(season, a, race(4, 4), first).reason)}`);
+    await saveChampProgress({ active: null, history: [] });
+    state.view = 'championships'; render(); await wait(2500); await snap('champ-none');
+    a.results = [scoreRound(season, a, race(15, 15), first).result];
+    await saveChampProgress({ active: a, history: [] });
+    render(); await wait(2500); await snap('champ-mid');
+    log(`check-champ standings: ${champStandings(season, a).slice(0, 5).map(r => `${chName(r.name)} ${r.points}`).join(', ')}`);
+    await saveChampProgress(saved);
+    await Neutralino.app.exit();
+    return;
+  }
   // --check-online: the Online page (lobby list, filters, a server's dialog) and the
   // race.ini a join writes, to <snapshots>/online-sandbox/cfg instead of AC's.
   if ((window.NL_ARGS || []).includes('--check-online')) {
