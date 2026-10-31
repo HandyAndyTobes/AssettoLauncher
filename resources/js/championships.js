@@ -4,7 +4,7 @@
 // player's progress (launcher storage "championships") and starts a round
 // through Quick Drive's race.ini writer: a practice/qualifying/race weekend
 // with the season's grid.
-import { storageGet, storageSet, log } from './util.js';
+import { storageGet, storageSet, log, exists, join } from './util.js';
 import { buildGrid, raceLaps } from './championship-core.js';
 import { quickDrive, readAcSession, defaultAcSession } from './quickdrive.js';
 import { readCsp } from './csp.js';
@@ -49,11 +49,18 @@ export async function startRound(paths, active, index, tracks, { start = true } 
   const track = tracks.find(t => t.id === round.track);
   const layout = track?.layouts.find(l => l.id === round.layout);
   if (!layout) throw new Error(`${round.name}: the track ${round.track} isn't installed. Choose another for this round on the Championships page.`);
+  // The player's car and the grid's models, each checked once (a folder exists).
+  const ids = [...new Set([active.car, ...active.grid.map(g => g.model)])];
+  const gone = (await Promise.all(ids.map(async id => ((await exists(join(paths.ac.content, 'cars', id))) ? null : id)))).filter(Boolean);
+  if (gone.length) throw new Error(`${gone.join(', ')} ${gone.length > 1 ? "aren't" : "isn't"} installed any more: reinstall ${gone.length > 1 ? 'them' : 'it'} or abandon the season.`);
   const s = active.settings;
   const csp = await readCsp(paths).catch(() => null);
   const base = await readAcSession(paths, csp).catch(() => defaultAcSession());
-  const boxes = Number(layout.pitboxes) || 20;
-  const grid = active.grid.slice(0, Math.max(1, Math.min(boxes, 64) - 1));
+  // AC can't place more cars than the track has pit boxes; a track that doesn't
+  // say gets the whole grid (at most 63 opponents).
+  const boxes = Number(layout.pitboxes) || 0;
+  if (!boxes) log(`championship round ${index + 1}: ${round.track}/${round.layout} doesn't give its pit boxes, using the full grid`);
+  const grid = active.grid.slice(0, boxes ? Math.max(1, Math.min(boxes, 64) - 1) : 63);
   const laps = raceLaps(s.raceMinutes, layout.length);
   const session = {
     ...base, mode: 'weekend',

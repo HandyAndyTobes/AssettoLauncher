@@ -296,7 +296,7 @@ async function gridEntries(paths, grid, ai) {
 
 // selection: { car, skin, skins (all skin ids of the car), track, layout, session, maxOpponents }
 // csp: readCsp() (WeatherFX, 24 hours, specific date); null without CSP.
-// grid: the opponents' cars [{ car, skin }] (else the player's car with its other skins).
+// grid: the opponents' cars [{ car, skin, name?, nation?, level? }] (else the player's car with its other skins).
 // start: false only writes the files (the Academy's check mode).
 export async function quickDrive(paths, { car, skin, skins = [], track, layout, session = defaultAcSession(), maxOpponents = 0, csp = null, grid = null, start = true }) {
   const acDir = paths.ac.install;

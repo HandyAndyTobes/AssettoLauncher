@@ -5149,7 +5149,13 @@ function resultCard(ev, r, res) {
 // Championships (championships.js, championship-core.js)
 
 const CH = { seasons: null };
-const chSeasons = async () => (CH.seasons ||= await loadSeasons());
+// Cached once some loaded: an empty list (a failed fetch) is tried again next time.
+const chSeasons = async () => {
+  if (CH.seasons?.length) return CH.seasons;
+  const list = await loadSeasons();
+  if (list.length) CH.seasons = list;
+  return list;
+};
 const chName = name => (name === PLAYER ? tr('You') : name);
 // Every installed layout a round can be driven on (AC can load it, it has an AI
 // line): the substitutes for a round whose track isn't installed.
@@ -6961,8 +6967,15 @@ async function runSnapshots(dir) {
     season.rounds.forEach((r, i) => { const m = matchRound(r, tracks); log(`check-champ round ${i + 1} ${r.name}: ${m.best ? `${m.best.track}/${m.best.layout}` : 'missing'} (${m.options.length} options)`); });
     const gt3 = gt3Cars(cars);
     log(`check-champ gt3: ${gt3.player.length} cars, ${gt3.models.length} models with AI: ${gt3.models.map(c => c.id).join(', ')}`);
+    if (!gt3.player.length || !gt3.models.length) {
+      log('check-champ: no GT3 car (or none with AI) installed, season part skipped');
+      await Neutralino.app.exit();
+      return;
+    }
+    // The real progress is overwritten below: put back whatever happens.
     const saved = await champProgress();
-    const rounds = season.rounds.map(r => { const b = matchRound(r, tracks).best; return { name: r.name, track: b?.track || '', layout: b?.layout || '', dropped: !b }; });
+    try {
+    const rounds =season.rounds.map(r => { const b = matchRound(r, tracks).best; return { name: r.name, track: b?.track || '', layout: b?.layout || '', dropped: !b }; });
     const a = newSeason(season, { car: gt3.player[0].id, skin: gt3.player[0].skins[0]?.id || '', rounds, models: gt3.models, settings: { gridSize: 20, level: 90, aggression: 30, raceMinutes: 30, practice: true } });
     log(`check-champ grid: ${a.grid.map(x => `${x.name}/${x.model}/${x.level}`).join(', ')}`);
     const sb = `${norm(dir)}/champ-sandbox`;
@@ -6989,7 +7002,12 @@ async function runSnapshots(dir) {
       render(); await wait(2500); await snap('champ-missing');
       log(`check-champ missing: picker ${$('#ch-sub') ? `shown with ${$('#ch-sub').options.length} options` : 'NOT shown'}, start button ${$('#ch-start') ? 'shown' : 'hidden'}`);
     }
-    await saveChampProgress(saved);
+    } catch (err) {
+      log(`check-champ failed: ${err?.stack || err}`);
+    } finally {
+      await saveChampProgress(saved);
+      log('check-champ: real progress put back');
+    }
     await Neutralino.app.exit();
     return;
   }
