@@ -22,8 +22,10 @@ import { IMPORT_RE, resolveDropped, prepareImport, installItem, setItemCar, carC
 import { syncEvoTrackList, restoreEvoTrackList, evoTrackListStatus } from './evotracks.js';
 import { readEvoExtras, readCarPresets, isLazyImage, lazyImage } from './kspkg.js';
 import { lobbyList, serverInfo, serverSlots, serverTrack, trackFinder, serverName, serverKey, savedServers, toggleFavourite, joinServer, steamId, downloadContent, opensInBrowser, pingServers, SESSION_NAMES } from './online.js';
+import { loadSeasons, champProgress, saveChampProgress, newSeason, nextRoundIndex, startRound } from './championships.js';
+import { matchRound, gt3Cars, raceLaps, standings as champStandings, scoreRound, PLAYER } from './championship-core.js';
 import { latestRelease, isNewer, isInstalledCopy, installUpdate } from './appupdate.js';
-import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, CURL, NULL_DEV, IS_LINUX } from './util.js';
+import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, readRaceOut, CURL, NULL_DEV, IS_LINUX } from './util.js';
 import { tr, trn, N_, loadLanguage, systemLanguage, LANGUAGES, lang } from './i18n.js';
 
 // tr() for HTML: the values filled in ({name}, {version}…) are escaped, since names
@@ -371,6 +373,7 @@ const launches = {}, nextLaunch = {};
 async function gameClosed(key, l) {
   if (key === 'evo') watchStop();
   if (l.academy) await academyClosed(key, l).catch(err => log(`academy result: ${err?.stack || err}`));
+  if (key === 'ac' && l.championship) await championshipClosed(l).catch(err => log(`championship result: ${err?.stack || err}`));
   if (key === 'ac' && l.academy?.layout) await restoreClassLayout(l.academy.layout).catch(err => log(`academy layout: ${err?.message || err}`));
   if (key === 'ac') {
     const r = await readAcRun(state.paths, l.at - 5000);
@@ -5140,6 +5143,56 @@ function resultCard(ev, r, res) {
   const got = res.gained;
   const value = res.type === 'time' ? (r.ms ? lapTime(r.ms) : tr('No clean lap')) : r.pos ? tr('Finished {pos}', { pos: scoreText('position', r.pos) }) : r.dsq ? tr('Disqualified') : tr('Not finished');
   return { kicker: ayCardKicker(ev), title: got ? tr(AY_TIER[got]) : tr('No medal'), tier: TIERS[got - 1] || '', time: value };
+}
+
+// ---------------------------------------------------------------------------
+// Championships (championships.js, championship-core.js)
+
+const CH = { seasons: null };
+const chSeasons = async () => (CH.seasons ||= await loadSeasons());
+const chName = name => (name === PLAYER ? tr('You') : name);
+
+// AC closed after a round: score it from race_out.json, save it, say how it went.
+async function championshipClosed(l) {
+  const p = await champProgress();
+  const a = p.active;
+  if (!a || a.seasonId !== l.championship.seasonId) return;
+  const season = (await chSeasons()).find(s => s.id === a.seasonId);
+  if (!season) return;
+  const index = l.championship.round;
+  const out = await readRaceOut(join(state.paths.ac.cfg.replace(/\/[^/]+$/, ''), 'out/race_out.json'), l.at - 5000);
+  const { result, reason } = out ? scoreRound(season, a, out, index) : { result: null, reason: 'no race_out.json' };
+  log(`championship round ${index + 1}: ${result ? `P${result.pos}, ${result.points} pts` : reason}`);
+  if (!result) {
+    toast(tr('Race not finished: round {n} can be run again.', { n: index + 1 }), true);
+    if (state.view === 'championships') renderChampionships();
+    return;
+  }
+  const before = champStandings(season, a).findIndex(r => r.player) + 1;
+  a.results = [...a.results.filter(r => r.round !== index), result];
+  const finished = nextRoundIndex(a) < 0;
+  if (finished) {
+    const rows = champStandings(season, a);
+    const me = rows.find(r => r.player);
+    p.history = [{ seasonId: a.seasonId, name: season.name, car: a.car, rank: rows.indexOf(me) + 1, points: me.points, at: Date.now() }, ...p.history];
+    p.active = null;
+  }
+  await saveChampProgress(p);
+  if (state.view === 'championships') renderChampionships();
+  chResultCard(season, a, result, before, finished);
+}
+
+function chResultCard(season, a, result, before, finished) {
+  const rows = champStandings(season, a);
+  const now = rows.findIndex(r => r.player) + 1;
+  const change = before && now !== before ? (now < before ? `▲ ${before - now}` : `▼ ${now - before}`) : '';
+  modal(`<div class="ch-card">
+    <div class="ch-card-sub">${esc(season.name)} · ${esc(tr('Round {n}', { n: result.round + 1 }))} · ${esc(a.rounds[result.round].name)}</div>
+    <h2>${esc(tr(finished ? 'Season finished' : 'Round finished'))}</h2>
+    <div class="ch-card-big"><b>P${result.pos}</b><span>${esc(trn(result.points, '1 point', '{n} points'))}${result.pole === PLAYER ? ` · ${esc(tr('pole'))}` : ''}</span></div>
+    <p>${esc(tr(finished ? 'Final position: P{n} with {pts} points.' : 'Championship: P{n} with {pts} points.', { n: now, pts: rows[now - 1].points }))} ${change ? `<span class="ch-change">${change}</span>` : ''}</p>
+    <ol class="ch-mini">${rows.slice(0, 5).map(r => `<li class="${r.player ? 'me' : ''}"><span>${esc(chName(r.name))}</span><b>${r.points}</b></li>`).join('')}</ol>
+  </div>`, 'modal ch-modal');
 }
 
 function renderCommunity() {
