@@ -5195,6 +5195,156 @@ function chResultCard(season, a, result, before, finished) {
   </div>`, 'modal ch-modal');
 }
 
+// The page: the season running (calendar and standings side by side, the next
+// round with Start), or with none the series card with New season and past seasons.
+async function renderChampionships() {
+  const g = gameByKey('ac');
+  if (!isInstalled(g) || !state.paths?.ac?.install) {
+    main.innerHTML = `<div class="view scaled"><div class="page">${olOtherGameNote()}<div class="empty"><h3>${tr('Assetto Corsa not found')}</h3>${tr('Championships are raced in Assetto Corsa, installed through Steam.')}</div></div></div>`;
+    main.querySelector('[data-ol-start]')?.addEventListener('click', e => launchGame(gameByKey(e.currentTarget.dataset.olStart)));
+    return;
+  }
+  main.innerHTML = `<div class="view scaled mods champ">${olOtherGameNote()}<div id="ch-wrap"><div class="loading">${tr('Loading…')}</div></div></div>`;
+  main.querySelector('[data-ol-start]')?.addEventListener('click', e => launchGame(gameByKey(e.currentTarget.dataset.olStart)));
+  const [seasons, p, tracks, cars] = await Promise.all([chSeasons(), champProgress(), getItems(g, 'tracks'), getItems(g, 'cars')]);
+  if (state.view !== 'championships') return;
+  const wrap = $('#ch-wrap');
+  const season = seasons[0];
+  const a = p.active;
+  if (!season) { wrap.innerHTML = `<div class="empty">${tr('No championships found.')}</div>`; return; }
+
+  if (!a) {
+    const gt3 = gt3Cars(cars);
+    const matched = season.rounds.map(r => matchRound(r, tracks).best);
+    wrap.innerHTML = `<div class="ch-series">
+      <div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2><p>${esc(trn(season.rounds.length, '1 round', '{n} rounds'))} · GT3 · ${esc(tr('practice, qualifying and race each round'))}</p></div>
+        <button class="btn primary" id="ch-new" ${gt3.player.length && gt3.models.length ? '' : 'disabled'}>${tr('New season')}</button></div>
+      ${gt3.models.length ? '' : `<p class="ch-warn">${tr("No GT3 car with AI data is installed, so there's no grid to race.")}</p>`}
+      <div class="ch-rounds">${season.rounds.map((r, i) => `<div class="ch-round ${matched[i] ? '' : 'off'}">
+        <b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${matched[i] ? esc(`${matched[i].title}${matched[i].layoutName && matched[i].layoutName !== matched[i].title ? ` · ${matched[i].layoutName}` : ''}`) : esc(tr('Not installed: pick another track or drop it when you start'))}</small></div>
+        <span class="ch-badge ${matched[i] ? 'ok' : 'warn'}">${matched[i] ? '✓' : tr('Missing')}</span></div>`).join('')}</div>
+      ${p.history.length ? `<div class="section-title">${tr('Past seasons')}</div><div class="ch-history">${p.history.map(h => `<div><span>${esc(h.name)}</span><small>${esc(cars.find(c => c.id === h.car)?.title || h.car)} · ${esc(timeAgo(h.at))}</small><b>P${h.rank} · ${h.points}</b></div>`).join('')}</div>` : ''}
+    </div>`;
+    $('#ch-new')?.addEventListener('click', () => chSetup(season, tracks, cars));
+    return;
+  }
+
+  const rows = champStandings(season, a);
+  const me = rows.findIndex(r => r.player) + 1;
+  const next = nextRoundIndex(a);
+  const carTitle = id => cars.find(c => c.id === id)?.title || id;
+  wrap.innerHTML = `<div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2>
+      <p>${esc(carTitle(a.car))} · ${esc(trn(a.grid.length, '1 AI car', '{n} AI cars'))} · ${esc(tr('{n} min races', { n: a.settings.raceMinutes }))}</p></div>
+      <span class="ch-badge">P${me} · ${rows[me - 1].points} ${tr('pts')}</span></div>
+    <div class="ch-dash">
+      <div class="ch-col"><div class="section-title">${tr('Calendar')}</div>${a.rounds.map((r, i) => {
+        const res = a.results.find(x => x.round === i);
+        const t = tracks.find(x => x.id === r.track);
+        const cls = r.dropped ? 'dropped' : res ? 'done' : i === next ? 'next' : 'later';
+        const right = r.dropped ? `<span class="ch-badge">${tr('Dropped')}</span>`
+          : res ? `<span class="ch-badge ok">P${res.pos} · ${res.points}${res.pole === PLAYER ? ` · ${tr('pole')}` : ''}</span>`
+          : i === next ? `<button class="btn primary" data-launch-game="ac" id="ch-start">▶ ${tr('Start round')}</button>` : '';
+        return `<div class="ch-round ${cls}"><b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${esc(t ? t.title : r.track)}${r.layout ? ` · ${esc(r.layout)}` : ''}</small></div>${right}</div>`;
+      }).join('')}</div>
+      <div class="ch-col"><div class="section-title">${tr('Standings')}</div><table class="ch-table">${rows.map((r, i) => `<tr class="${r.player ? 'me' : ''}"><td>${i + 1}</td><td>${esc(chName(r.name))}</td><td class="muted">${esc(carTitle(r.car))}</td><td class="n">${r.points}</td></tr>`).join('')}</table></div>
+    </div>
+    <button class="btn small subtle" id="ch-abandon">${tr('Abandon season')}</button>`;
+  syncRunning(wrap);
+  $('#ch-start')?.addEventListener('click', async e => {
+    if (isUp('ac')) return; // the running-game button handles Close
+    e.currentTarget.disabled = true;
+    try {
+      nextLaunch.ac = { championship: { seasonId: a.seasonId, round: next } };
+      await startRound(state.paths, a, next, tracks);
+      markStarting('ac');
+      toast(tr('Starting round {n}: {track}…', { n: next + 1, track: a.rounds[next].name }));
+      if (state.settings.minimizeOnLaunch) setTimeout(() => Neutralino.window.minimize(), 1500);
+    } catch (err) {
+      delete nextLaunch.ac;
+      toast(err.message, true);
+      e.currentTarget.disabled = false;
+    }
+  });
+  // A second click confirms, as the launcher's other destructive buttons do.
+  $('#ch-abandon').addEventListener('click', async e => {
+    const b = e.currentTarget;
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = tr('Click again to abandon'); setTimeout(() => { delete b.dataset.armed; b.textContent = tr('Abandon season'); }, 4000); return; }
+    p.active = null;
+    await saveChampProgress(p);
+    renderChampionships();
+  });
+}
+
+// New season: car and skin, grid, AI, race length, and each round's track
+// (matched, a layout choice, or a substitute / Drop for a missing one).
+function chSetup(season, tracks, cars) {
+  const gt3 = gt3Cars(cars);
+  const withAi = tracks.flatMap(t => t.playable === false ? [] : t.layouts.filter(l => l.aiLine).map(l => ({ track: t.id, layout: l.id, title: t.title, layoutName: l.name })));
+  const optLabel = o => `${o.title}${o.layoutName && o.layoutName !== o.title ? ` · ${o.layoutName}` : ''}`;
+  const maxGrid = gt3.models.length * 2;
+  const sizes = [15, 20, 25].filter(n => n <= maxGrid);
+  if (!sizes.length) sizes.push(maxGrid);
+  const pick = { car: gt3.player[0].id };
+  const matches = season.rounds.map(r => matchRound(r, tracks));
+  const { el, close } = modal(`<div class="qd ch-setup">
+    <header class="qd-head"><h2>${esc(season.name)}</h2><div class="qd-sub">${tr('Choose once for the whole season.')}</div></header>
+    <div class="ch-form">
+      <label>${tr('Your car')}<select id="chs-car">${gt3.player.map(c => `<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')}</select></label>
+      <label>${tr('Skin')}<select id="chs-skin"></select></label>
+      <label>${tr('AI cars')}<select id="chs-grid">${sizes.map(n => `<option ${n === Math.min(20, sizes[sizes.length - 1]) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>${tr('AI strength')} <span id="chs-level-v">90%</span><input type="range" id="chs-level" min="70" max="100" value="90"></label>
+      <label>${tr('AI aggression')} <span id="chs-agg-v">30%</span><input type="range" id="chs-agg" min="0" max="100" value="30"></label>
+      <label>${tr('Race length')}<select id="chs-min">${[20, 30, 45, 60].map(n => `<option value="${n}" ${n === 30 ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
+      <label class="ch-check"><input type="checkbox" id="chs-prac" checked> ${tr('10 min practice before qualifying')}</label>
+    </div>
+    <div class="section-title">${tr('Rounds')}</div>
+    <div class="ch-setup-rounds">${season.rounds.map((r, i) => {
+      const m = matches[i];
+      const opts = m.options.length ? m.options : withAi;
+      return `<div class="ch-round ${m.best ? '' : 'off'}"><b>${i + 1}</b><div><span>${esc(r.name)}</span>${m.best ? '' : `<small>${esc(tr('Not installed: pick another track, or drop the round'))}</small>`}</div>
+        <select data-chs-round="${i}">${m.best ? '' : `<option value="">${esc(tr('Drop this round'))}</option>`}${opts.map(o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(optLabel(o))}</option>`).join('')}</select></div>`;
+    }).join('')}</div>
+    <div class="ch-actions"><span class="ch-laps" id="chs-laps"></span><button class="btn primary" id="chs-go">${tr('Start season')}</button></div>
+  </div>`, 'modal ch-modal wide');
+
+  const skins = () => {
+    const c = cars.find(x => x.id === el.querySelector('#chs-car').value);
+    el.querySelector('#chs-skin').innerHTML = (c?.skins || []).map(s => `<option value="${esc(s.id)}">${esc(prettifyId(s.id))}</option>`).join('');
+  };
+  const laps = () => {
+    const min = Number(el.querySelector('#chs-min').value);
+    const parts = [...el.querySelectorAll('[data-chs-round]')].map(s => {
+      const [t, l] = s.value.split('|');
+      const layout = tracks.find(x => x.id === t)?.layouts.find(x => x.id === l);
+      return layout ? raceLaps(min, layout.length) : null;
+    }).filter(Boolean);
+    el.querySelector('#chs-laps').textContent = parts.length ? tr('About {a}–{b} laps a race', { a: Math.min(...parts), b: Math.max(...parts) }) : '';
+  };
+  el.querySelector('#chs-car').addEventListener('change', skins);
+  el.querySelector('#chs-min').addEventListener('change', laps);
+  el.querySelectorAll('[data-chs-round]').forEach(s => s.addEventListener('change', laps));
+  for (const [id, out] of [['#chs-level', '#chs-level-v'], ['#chs-agg', '#chs-agg-v']]) el.querySelector(id).addEventListener('input', e => { el.querySelector(out).textContent = `${e.target.value}%`; });
+  skins(); laps();
+
+  el.querySelector('#chs-go').addEventListener('click', async () => {
+    const rounds = season.rounds.map((r, i) => {
+      const v = el.querySelector(`[data-chs-round="${i}"]`).value;
+      const [track, layout] = v.split('|');
+      return { name: r.name, track: track || '', layout: layout || '', dropped: !v };
+    });
+    if (rounds.every(r => r.dropped)) { toast(tr('Keep at least one round.'), true); return; }
+    const p = await champProgress();
+    p.active = newSeason(season, {
+      car: el.querySelector('#chs-car').value, skin: el.querySelector('#chs-skin').value, rounds, models: gt3.models,
+      settings: { gridSize: Number(el.querySelector('#chs-grid').value), level: Number(el.querySelector('#chs-level').value), aggression: Number(el.querySelector('#chs-agg').value), raceMinutes: Number(el.querySelector('#chs-min').value), practice: el.querySelector('#chs-prac').checked },
+    });
+    await saveChampProgress(p);
+    log(`championship: new ${season.id} with ${p.active.car}, grid ${p.active.grid.length}`);
+    close();
+    renderChampionships();
+  });
+}
+
 function renderCommunity() {
   const g = gameByKey(state.game);
   const links = [
@@ -6173,7 +6323,7 @@ async function applyPaths() {
 // (renderSettings), so the page being left doesn't stretch while Settings loads.
 function syncChrome() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
-  $('#app').classList.toggle('qd-mode', state.view === 'quickdrive' || state.view === 'academy' || state.view === 'online');
+  $('#app').classList.toggle('qd-mode', state.view === 'quickdrive' || state.view === 'academy' || state.view === 'online' || state.view === 'championships');
   if (state.view !== 'settings') $('#app').classList.remove('settings-mode');
 }
 
@@ -6186,6 +6336,7 @@ function render() {
   if (state.view === 'games') renderGames();
   else if (state.view === 'mods') renderMods();
   else if (state.view === 'academy') renderAcademy();
+  else if (state.view === 'championships') renderChampionships();
   else if (state.view === 'online') renderOnline();
   else if (state.view === 'community') renderCommunity();
   else if (state.view === 'settings') renderSettings();
