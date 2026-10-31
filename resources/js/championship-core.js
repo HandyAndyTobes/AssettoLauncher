@@ -72,9 +72,10 @@ const isGt3 = c => !isCup(c) && !isRoad(c) && !tagIs(c, 'gt2') && !tagIs(c, 'gte
   && (tagIs(c, 'gt3') || /gt3/i.test(c.id) || low(c.carClass) === 'gt3');
 const modelKey = id => low(id).replace(/_(acc|evo\d*)$/, '');
 const titleKey = c => low(c.title).replace(/[^a-z0-9]/g, '');
-// Same words in another order (bm_amg_evo_2020_gt3 / bm_amg_evo_gt3_2020), when
-// the two copies carry differently worded titles.
-const idLetters = c => [...modelKey(c.id).replace(/[^a-z0-9]/g, '')].sort().join('');
+// The id's underscore-separated words, sorted: the same words in another order,
+// e.g. bm_amg_evo_2020_gt3 and bm_amg_evo_gt3_2020, when the two copies carry
+// differently worded titles.
+const idWords = c => modelKey(c.id).split('_').filter(Boolean).sort().join('_');
 export function gt3Cars(cars) {
   const player = cars.filter(isGt3);
   const withAi = player.filter(c => c.ai);
@@ -83,7 +84,7 @@ export function gt3Cars(cars) {
   const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const seen = new Map();
   withAi.forEach((c, i) => {
-    for (const k of [`id:${modelKey(c.id)}`, `letters:${idLetters(c)}`, titleKey(c) && `title:${titleKey(c)}`]) {
+    for (const k of [`id:${modelKey(c.id)}`, `words:${idWords(c)}`, titleKey(c) && `title:${titleKey(c)}`]) {
       if (!k) continue;
       if (seen.has(k)) parent[find(i)] = find(seen.get(k)); else seen.set(k, i);
     }

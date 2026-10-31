@@ -73,6 +73,14 @@ test('gt3Cars counts folder names with the same words in another order as one mo
   assert.equal(r.models.length, 2);
 });
 
+test('gt3Cars keeps cars whose ids only share the same letters as separate models', () => {
+  const r = gt3Cars([
+    car('mclaren_720s_gt3', { title: 'McLaren 720S GT3', tags: ['gt3'] }),
+    car('mclaren_270s_gt3', { title: 'McLaren 270S GT3 Other', tags: ['gt3'] }),
+  ]);
+  assert.equal(r.models.length, 2);
+});
+
 test('raceLaps turns minutes into laps from the track length', () => {
   assert.equal(raceLaps(30, '5793 m'), 15);  // 30 min at 175 km/h = 87.5 km / 5.793 = 15.1
   assert.equal(raceLaps(30, '7.0 km'), 13);  // 12.5 rounds up
