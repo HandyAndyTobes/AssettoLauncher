@@ -21,8 +21,9 @@ import { knownCars, withAllConfigs, launchEvo, readEvoSession, defaultEvoSession
 import { IMPORT_RE, resolveDropped, prepareImport, installItem, setItemCar, carChoices, discardImport } from './installer.js';
 import { syncEvoTrackList, restoreEvoTrackList, evoTrackListStatus } from './evotracks.js';
 import { readEvoExtras, readCarPresets, isLazyImage, lazyImage } from './kspkg.js';
+import { lobbyList, serverInfo, serverSlots, serverTrack, trackFinder, serverName, serverKey, savedServers, toggleFavourite, joinServer, steamId, downloadContent, opensInBrowser, pingServers, SESSION_NAMES } from './online.js';
 import { latestRelease, isNewer, isInstalledCopy, installUpdate } from './appupdate.js';
-import { esc, timeAgo, openExternal, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, CURL, NULL_DEV, IS_LINUX } from './util.js';
+import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, CURL, NULL_DEV, IS_LINUX } from './util.js';
 import { tr, trn, N_, loadLanguage, systemLanguage, LANGUAGES, lang } from './i18n.js';
 
 // tr() for HTML: the values filled in ({name}, {version}…) are escaped, since names
@@ -3348,8 +3349,8 @@ const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2
 
 // The dropped files being read, before the review opens in the same window: a row
 // per file with what's happening to it (copied in, extracted, looked through).
-// Nothing can be closed meanwhile.
-function readingDialog(names) {
+// Nothing can be closed meanwhile, except downloads (onCancel: a Cancel button).
+function readingDialog(names, onCancel) {
   const rows = names.map(() => ({ state: 'wait', line: 'Waiting', pct: null, t0: 0 }));
   let timer = 0;
   const { el, close } = modal(`<div class="qd imp">
@@ -3363,8 +3364,14 @@ function readingDialog(names) {
       </div>
       <span class="imp-tag"></span>
     </div>`).join('')}</div>
+    ${onCancel ? '<div class="imp-actions"><button class="btn small subtle" data-r-cancel>Cancel</button></div>' : ''}
   </div>`, 'modal imp-modal', () => clearInterval(timer));
   el.dataset.busy = '1';
+  el.querySelector('[data-r-cancel]')?.addEventListener('click', e => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Cancelling…';
+    onCancel();
+  });
 
   const draw = k => {
     const r = rows[k], row = el.querySelector(`[data-r="${k}"]`);
@@ -3413,14 +3420,19 @@ let importing = false;
 async function importSources(sources) {
   if (importing) { toast('Still working on the previous mod…', true); return; }
   importing = true;
-  const labels = sources.map(s => s.file?.name || basename(s.path));
-  const reading = readingDialog(labels);
+  // A source is a dropped File, a { path } on disk, or a { url, name } to download
+  // first (a server's missing car or track).
+  // Cancel (downloads only) stops the download and drops everything read so far.
+  const labels = sources.map(s => s.file?.name || s.name || basename(s.path));
+  const abort = sources.some(s => s.url) ? new AbortController() : null;
+  const reading = readingDialog(labels, abort && (() => abort.abort()));
   const items = [], problems = [], sessions = [];
   try {
     const evoCache = await evoCacheDir().catch(() => '');
     for (const [k, s] of sources.entries()) {
+      if (abort?.signal.aborted) break;
       const label = labels[k];
-      if (!IMPORT_RE.test(label)) {
+      if (!s.url && !IMPORT_RE.test(label)) {
         problems.push(`${label}: not a mod archive or mod file`);
         reading.finish(k, 0, 'Not a mod archive or mod file');
         continue;
@@ -3429,7 +3441,13 @@ async function importSources(sources) {
         reading.stage(k, 'Starting');
         const src = s.file
           ? await resolveDropped(s.file, (done, total) => reading.stage(k, 'Copying into the launcher', done / total * 100))
-          : { path: s.path, temp: false };
+          : s.url
+            ? await downloadContent(s.url, s.name, {
+              signal: abort.signal,
+              onStatus: line => reading.stage(k, line),
+              onProgress: (done, total) => reading.stage(k, total ? `Downloading · ${sizeText(done)} of ${sizeText(total)}` : `Downloading · ${sizeText(done)}`, total ? done / total * 100 : null),
+            })
+            : { path: s.path, temp: false };
         const r = await prepareImport(src, state.paths, { evoCache, onStatus: line => reading.stage(k, line) });
         sessions.push(...r.session);
         items.push(...r.items);
@@ -3439,6 +3457,7 @@ async function importSources(sources) {
           reading.finish(k, 0, 'No Assetto Corsa mod recognised inside');
         }
       } catch (err) {
+        if (err?.name === 'AbortError') break;
         log(`import ${label}: ${err?.stack || err?.message || JSON.stringify(err)}`);
         problems.push(`${label}: ${err?.message || 'could not be read'}`);
         reading.finish(k, 0, err?.message || 'Could not be read');
@@ -3448,6 +3467,15 @@ async function importSources(sources) {
     importing = false;
   }
   reading.close();
+  if (abort?.signal.aborted) {
+    sessions.forEach(discardImport);
+    toast('Download cancelled');
+    // Back to the server the downloads were for.
+    const s = OL.reopen;
+    OL.reopen = null;
+    if (s && state.view === 'online') openServer(s, await olAc());
+    return;
+  }
   await openInstallReview(items, problems, sessions);
 }
 
@@ -3597,6 +3625,13 @@ function installsDone() {
   else toast(`Installed ${done.length} mod${done.length > 1 ? 's' : ''}`);
   if (done.some(isEvoListed)) evoTrackSync({ force: true });
   if (state.view === 'academy') { AY.data = {}; drawAcademy(); return; }
+  // A server's missing content: back to that server, now with it installed.
+  if (state.view === 'online') {
+    const s = OL.reopen;
+    OL.reopen = null;
+    renderOnline().then(async () => { if (s && state.view === 'online') openServer(s, await olAc()); });
+    return;
+  }
   // The new mod's tab, if the dialog was watched to the end; otherwise the page
   // being looked at stays, refreshed.
   const first = done.find(i => i.tab);
@@ -5145,6 +5180,411 @@ function renderCommunity() {
 }
 
 // ---------------------------------------------------------------------------
+// Online view (Assetto Corsa): the lobby's public servers, the player's
+// favourites and recent ones. Each row says whether the player has the track
+// and a car the server runs; a server opens a dialog to pick the car and join.
+
+// reopen: the server whose missing content is being installed, opened again after.
+// ping: serverKey => ms (0 no answer), measured once a session; pinging: while it is.
+const OL = { tab: 'all', search: '', filters: { ready: false, drivers: true, free: false, open: false }, shown: 150, list: null, error: '', extra: {}, loading: false, reopen: null, ping: new Map(), pinging: false };
+const OL_SORTS = [['drivers', 'Most drivers'], ['ping', 'Lowest ping']];
+// Servers that didn't answer, or aren't measured yet, go last.
+const olPing = s => OL.ping.get(serverKey(s)) || Infinity;
+const olSorters = {
+  drivers: (a, b) => (b.s.clients - a.s.clients) || (olPing(a.s) - olPing(b.s)),
+  ping: (a, b) => (olPing(a.s) - olPing(b.s)) || (b.s.clients - a.s.clients),
+};
+const OL_FILTERS = [['ready', 'I have the content'], ['drivers', 'Has drivers'], ['free', 'Has free slots'], ['open', 'No password']];
+
+const olPingHTML = s => {
+  const ms = OL.ping.get(serverKey(s));
+  if (ms == null) return `<span class="ol-ping">${OL.pinging ? '…' : ''}</span>`;
+  if (!ms) return `<span class="ol-ping none" title="${esc(tr("Didn't answer"))}">—</span>`;
+  return `<span class="ol-ping ${ms < 80 ? 'good' : ms < 150 ? '' : 'far'}" title="${esc(tr('Ping'))}">${ms} ms</span>`;
+};
+
+// Pings the lobby's servers in the background, the ones with drivers first;
+// the list is redrawn as answers come in (at most every 1.5 s). Slow or silent
+// ones are asked again, fewer at a time, and the better answer kept: with 64
+// connections at once a lost first attempt adds a second to the time.
+function olStartPings() {
+  const draw = () => OL.draw?.();
+  if (OL.pinging || !OL.list) return;
+  const todo = OL.list.servers.filter(s => !OL.ping.has(serverKey(s)))
+    .sort((a, b) => (b.clients > 0) - (a.clients > 0));
+  if (!todo.length) return;
+  OL.pinging = true;
+  let timer = 0;
+  const soon = () => { timer ||= setTimeout(() => { timer = 0; draw(); }, 1500); };
+  const better = (key, ms) => { const was = OL.ping.get(key); if (!was || (ms && ms < was)) OL.ping.set(key, ms); soon(); };
+  pingServers(todo, (key, ms) => { OL.ping.set(key, ms); soon(); })
+    .then(() => pingServers(todo.filter(s => { const ms = OL.ping.get(serverKey(s)); return !ms || ms >= 500; }), better, { parallel: 16 }))
+    .catch(err => log(`online ping: ${err?.message || err}`))
+    .finally(() => {
+      // Servers curl didn't report (it stopped early) count as not answering.
+      for (const s of todo) if (!OL.ping.has(serverKey(s))) OL.ping.set(serverKey(s), 0);
+      OL.pinging = false;
+      clearTimeout(timer);
+      draw();
+    });
+}
+
+// The installed content a server needs: { track ({ track, layout } or null),
+// cars (installed ids), missing (ids), csp (build it needs, 0 none), ready }.
+function olContent(s, ac) {
+  const { id, csp } = serverTrack(s.track);
+  const track = ac.findTrack(id);
+  const cars = (s.cars || []).filter(c => ac.cars.has(String(c).toLowerCase()));
+  const missing = [...(track ? [] : [id]), ...(s.cars || []).filter(c => !ac.cars.has(String(c).toLowerCase()))];
+  const cspShort = csp > 0 && (!ac.csp.installed || ac.csp.build < csp);
+  return { track, cars, missing, csp, cspShort, ready: !!track && cars.length > 0 && !cspShort };
+}
+
+// Minutes as people read them: "45 min", "3 h 20 min", "60 days" (free-roam
+// servers run sessions of weeks).
+const olMinutes = min => {
+  min = Math.round(Number(min) || 0);
+  if (min < 60) return `${min} min`;
+  if (min < 48 * 60) return min % 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min / 60} h`;
+  return trn(Math.floor(min / 1440), '1 day', '{n} days');
+};
+const olTimeLeft = s => {
+  const left = Math.max(0, (s.timeleft || 0) - Math.round((Date.now() - (OL.list?.at || Date.now())) / 1000));
+  if (!left) return '';
+  return left < 3600 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : tr('{time} left', { time: olMinutes(left / 60) });
+};
+
+async function olAc() {
+  const g = gameByKey('ac');
+  const [cars, tracks, csp] = await Promise.all([getItems(g, 'cars'), getItems(g, 'tracks'), readCsp(state.paths).catch(() => ({ installed: false, build: 0 }))]);
+  return { byCar: new Map(cars.map(c => [c.id.toLowerCase(), c])), cars: new Set(cars.map(c => c.id.toLowerCase())), findTrack: trackFinder(tracks), csp };
+}
+
+// The page lists Assetto Corsa servers only: ACC, EVO and Rally list theirs
+// inside the game (EVO's list comes from Kunos's backend through the game
+// itself, nothing outside can read it). With one of those picked in the
+// sidebar, a note says so, with a button that starts it.
+function olOtherGameNote() {
+  const other = gameByKey(state.game);
+  if (!other || other.key === 'ac' || !isInstalled(other)) return '';
+  const name = `${other.title} ${other.sub}`.trim();
+  return `<div class="ol-note">
+    <span>${tr('This page lists Assetto Corsa servers. For {game}, online racing is in the game itself.', { game: name })}</span>
+    <button class="btn small subtle" data-ol-start="${esc(other.key)}">▶ ${tr('Start {game}', { game: other.sub || other.title })}</button>
+  </div>`;
+}
+
+async function renderOnline(force = false) {
+  const g = gameByKey('ac');
+  if (!isInstalled(g) || !state.paths?.ac?.install) {
+    main.innerHTML = `<div class="view scaled"><div class="page">${olOtherGameNote()}<div class="empty"><h3>${tr('Assetto Corsa not found')}</h3>${tr('This page lists Assetto Corsa servers, and needs Assetto Corsa installed through Steam.')}</div></div></div>`;
+    main.querySelector('[data-ol-start]')?.addEventListener('click', e => launchGame(gameByKey(e.currentTarget.dataset.olStart)));
+    return;
+  }
+  main.innerHTML = `<div class="view scaled mods online">
+    ${olOtherGameNote()}
+    <div class="mods-head">
+      ${logoHTML(g)}
+      <div class="tabs" id="ol-tabs">${[['all', 'All servers'], ['favourites', 'Favourites'], ['recent', 'Recent']].map(([id, label]) => `<button data-ol-tab="${id}" class="${OL.tab === id ? 'active' : ''}">${tr(label)}</button>`).join('')}</div>
+      <div class="toolbar">
+        <input class="search" id="ol-search" placeholder="${esc(tr('Server, track or car…'))}" value="${esc(OL.search)}">
+        <button class="btn small subtle" id="ol-refresh" title="${esc(tr('Get the server list again'))}">↻ ${tr('Refresh')}</button>
+      </div>
+    </div>
+    <div class="ol-filters" id="ol-filters">${OL_FILTERS.map(([k, label]) => `<button class="ol-filter ${OL.filters[k] ? 'on' : ''}" data-ol-filter="${k}">${tr(label)}</button>`).join('')}
+      <div class="ol-sort"><span>${tr('Sort')}</span>${OL_SORTS.map(([k, label]) => `<button class="ol-filter ${(state.settings.olSort || 'drivers') === k ? 'on' : ''}" data-ol-sort="${k}">${tr(label)}</button>`).join('')}</div></div>
+    <div class="mods-meta"><span id="ol-count"></span><span class="path" id="ol-age"></span></div>
+    <div id="ol-wrap"><div class="loading">${tr('Loading servers…')}</div></div>
+  </div>`;
+
+  const view = main.querySelector('.online');
+  let ac = null, saved = null;
+  const draw = OL.draw = () => {
+    const wrap = $('#ol-wrap');
+    if (!wrap || state.view !== 'online' || !ac) return;
+    if (OL.error && !OL.list) { wrap.innerHTML = `<div class="empty"><h3>${tr('No server list')}</h3>${esc(OL.error)}</div>`; return; }
+    const lobby = OL.list?.servers || [];
+    let rows;
+    if (OL.tab === 'all') rows = lobby;
+    else {
+      const byKey = new Map(lobby.map(s => [serverKey(s), s]));
+      rows = saved[OL.tab].map(f => byKey.get(serverKey(f)) || OL.extra[serverKey(f)] || { ...f, offline: OL.extra[serverKey(f)] === null, pending: !(serverKey(f) in OL.extra), cars: [], clients: 0, maxclients: 0 });
+    }
+    const q = OL.search.trim().toLowerCase();
+    const f = OL.filters;
+    const list = rows.map(s => ({ s, c: olContent(s, ac) })).filter(({ s, c }) => {
+      if (OL.tab === 'all') {
+        if (f.ready && !c.ready) return false;
+        if (f.drivers && !(s.clients > 0)) return false;
+        if (f.free && !(s.clients < s.maxclients)) return false;
+        if (f.open && s.pass) return false;
+      }
+      if (!q) return true;
+      const words = [s.name, s.track, c.track?.layout?.name, c.track?.track.title, ...(s.cars || []).map(id => ac.byCar.get(String(id).toLowerCase())?.title || id)].join(' ').toLowerCase();
+      return q.split(/\s+/).every(w => words.includes(w));
+    });
+    if (OL.tab === 'all') list.sort(olSorters[state.settings.olSort] || olSorters.drivers);
+    $('#ol-count').textContent = OL.tab === 'all'
+      ? tr('{n} of {total} servers', { n: list.length.toLocaleString(), total: lobby.length.toLocaleString() })
+      : trn(list.length, '1 server', '{n} servers');
+    $('#ol-age').textContent = OL.list ? `${tr('Updated {ago}', { ago: timeAgo(OL.list.at) })}${OL.list.stale ? ` · ${tr("couldn't reach the lobby")}` : ''}` : '';
+    if (!list.length) {
+      wrap.innerHTML = `<div class="empty">${OL.tab === 'all' ? tr('No servers match. Try fewer filters.') : OL.tab === 'favourites' ? tr('No favourites yet. Open a server and star it.') : tr("Servers you join show up here.")}</div>`;
+      return;
+    }
+    const favs = new Set(saved.favourites.map(serverKey));
+    wrap.innerHTML = `<div class="ol-list">${list.slice(0, OL.shown).map(({ s, c }) => {
+      const session = s.offline ? tr('Offline') : s.pending ? tr('Checking…') : `${tr(SESSION_NAMES[s.session] || '')}${olTimeLeft(s) ? ` · ${olTimeLeft(s)}` : ''}`;
+      const status = s.offline || s.pending ? ''
+        : c.cspShort ? `<span class="ol-state warn">${tr('Needs CSP {build}', { build: c.csp })}</span>`
+        : !c.track ? `<span class="ol-state bad">${tr('Missing track')}</span>`
+        : !c.cars.length ? `<span class="ol-state bad">${tr('Missing cars')}</span>`
+        : `<span class="ol-state ok">${tr('Ready')}</span>`;
+      const trackName = c.track ? [c.track.track.title, c.track.layout?.name !== c.track.track.title ? c.track.layout?.name : ''].filter(Boolean).join(' · ') : serverTrack(s.track).id;
+      const flag = flagUrl(s.country?.[0]);
+      return `<button class="ol-row ${s.offline ? 'off' : ''}" data-ol-key="${esc(serverKey(s))}">
+        <span class="ol-star ${favs.has(serverKey(s)) ? 'on' : ''}" data-ol-star title="${esc(tr('Favourite'))}">★</span>
+        <span class="ol-name"><b>${s.pass ? '<span class="ol-lock" title="Password">🔒</span>' : ''}${esc(serverName(s.name))}</b>
+          <small>${esc(trackName || '')}${s.cars?.length ? ` · ${esc(trn(s.cars.length, '1 car', '{n} cars'))}` : ''}</small></span>
+        <span class="ol-session">${esc(session)}</span>
+        ${olPingHTML(s)}
+        <span class="ol-drivers">${s.maxclients ? `${s.clients}/${s.maxclients}` : ''}</span>
+        <span class="ol-flag">${flag ? `<img src="${flag}" alt="" title="${esc(s.country?.[0] || '')}">` : ''}</span>
+        ${status}
+      </button>`;
+    }).join('')}</div>${list.length > OL.shown ? `<button class="btn small subtle ol-more" id="ol-more">${tr('Show more')}</button>` : ''}`;
+  };
+
+  // Favourites and recent servers the lobby doesn't list: asked one by one.
+  // Ones being asked are skipped, so a second call (the list loading while a tab
+  // is opened) doesn't ask again.
+  const asking = new Set();
+  const checkSaved = async () => {
+    if (!saved) return;
+    const inLobby = new Set((OL.list?.servers || []).map(serverKey));
+    const todo = [...saved.favourites, ...saved.recent].filter(s => {
+      const key = serverKey(s);
+      if (inLobby.has(key) || key in OL.extra || asking.has(key)) return false;
+      asking.add(key);
+      return true;
+    });
+    await mapLimit(todo, 8, async s => {
+      OL.extra[serverKey(s)] = await serverInfo(s.ip, s.cport);
+      asking.delete(serverKey(s));
+      if (OL.tab !== 'all') draw();
+    });
+  };
+
+  const load = async refresh => {
+    OL.loading = true; OL.error = '';
+    try { OL.list = await lobbyList(state.paths.steam, { force: refresh }); }
+    catch (e) { OL.error = e.message; log(`online: ${e.message}`); }
+    OL.loading = false;
+    draw();
+    if (OL.tab !== 'all') checkSaved();
+    olStartPings();
+  };
+
+  view.addEventListener('click', async e => {
+    const start = e.target.closest('[data-ol-start]')?.dataset.olStart;
+    if (start) { launchGame(gameByKey(start)); return; }
+    if (!ac || !saved) return; // still reading the installed content
+    const tab = e.target.closest('[data-ol-tab]')?.dataset.olTab;
+    if (tab) {
+      OL.tab = tab; OL.shown = 150;
+      view.querySelectorAll('[data-ol-tab]').forEach(b => b.classList.toggle('active', b.dataset.olTab === tab));
+      $('#ol-filters').hidden = tab !== 'all';
+      draw();
+      if (tab !== 'all') checkSaved();
+      return;
+    }
+    const sort = e.target.closest('[data-ol-sort]')?.dataset.olSort;
+    if (sort) {
+      state.settings.olSort = sort; saveSettings(); OL.shown = 150;
+      view.querySelectorAll('[data-ol-sort]').forEach(b => b.classList.toggle('on', b.dataset.olSort === sort));
+      draw();
+      return;
+    }
+    const filter = e.target.closest('[data-ol-filter]')?.dataset.olFilter;
+    if (filter) {
+      OL.filters[filter] = !OL.filters[filter]; OL.shown = 150;
+      e.target.closest('[data-ol-filter]').classList.toggle('on', OL.filters[filter]);
+      draw();
+      return;
+    }
+    if (e.target.closest('#ol-more')) { OL.shown += 150; draw(); return; }
+    if (e.target.closest('#ol-refresh')) {
+      if (OL.loading) return;
+      OL.extra = {};
+      $('#ol-wrap').innerHTML = `<div class="loading">${tr('Loading servers…')}</div>`;
+      load(true);
+      return;
+    }
+    const row = e.target.closest('[data-ol-key]');
+    if (!row) return;
+    const key = row.dataset.olKey;
+    const s = (OL.list?.servers || []).find(x => serverKey(x) === key) || OL.extra[key] || [...saved.favourites, ...saved.recent].find(x => serverKey(x) === key);
+    if (e.target.closest('[data-ol-star]')) {
+      const on = await toggleFavourite(s);
+      saved = await savedServers();
+      e.target.closest('[data-ol-star]').classList.toggle('on', on);
+      if (OL.tab === 'favourites') draw();
+      return;
+    }
+    if (s && !s.offline && !s.pending) openServer(s, ac);
+  });
+  let typing;
+  $('#ol-search').addEventListener('input', e => {
+    clearTimeout(typing);
+    typing = setTimeout(() => { OL.search = e.target.value; OL.shown = 150; draw(); }, 150);
+  });
+  $('#ol-filters').hidden = OL.tab !== 'all';
+
+  [ac, saved] = await Promise.all([olAc(), savedServers()]);
+  if (OL.list && !force) { draw(); if (OL.tab !== 'all') checkSaved(); }
+  load(force);
+}
+
+// A server: its sessions, who's on, the cars it runs (the player picks one they
+// have, with a free slot), what's missing, and Join.
+async function openServer(s, ac) {
+  const c = olContent(s, ac);
+  const name = serverName(s.name);
+  const { el, close } = modal(`<div class="ol-detail">
+    <div class="ol-detail-head" ${c.track?.layout?.preview ? `style="background-image:linear-gradient(90deg,#181818 35%,rgba(24,24,24,.6)),url('${esc(c.track.layout.preview)}')"` : ''}>
+      <h2>${esc(name)}</h2>
+      <p>${esc(c.track ? [c.track.track.title, c.track.layout?.name].filter((v, i, a) => v && a.indexOf(v) === i).join(' · ') : serverTrack(s.track).id)}</p>
+      <div class="chips">
+        ${(s.sessiontypes || []).map((t, i) => `<span class="chip ${Number(t) === s.session ? 'on' : ''}">${esc(tr(SESSION_NAMES[t] || ''))} · ${Number(t) === 3 && !s.timed ? esc(trn(Number(s.durations?.[i]), '1 lap', '{n} laps')) : esc(olMinutes(s.durations?.[i]))}</span>`).join('')}
+        <span class="chip">${s.clients}/${s.maxclients} ${tr('drivers')}</span>
+        ${s.pass ? `<span class="chip">🔒 ${tr('Password')}</span>` : ''}
+        ${c.csp ? `<span class="chip">CSP ${c.csp}+</span>` : ''}
+      </div>
+    </div>
+    <div class="ol-detail-body">
+      <div class="section-title">${tr('Cars')}</div>
+      <div class="ol-cars" id="ol-cars"><div class="loading">${tr('Asking the server…')}</div></div>
+      <div id="ol-missing"></div>
+      <div class="ol-join">
+        ${s.pass ? `<input class="search ol-pass" id="ol-pass" type="password" placeholder="${esc(tr('Server password'))}">` : ''}
+        <span class="ol-join-note" id="ol-note"></span>
+        <button class="btn small subtle" id="ol-fav">${tr('Favourite')} ★</button>
+        <button class="btn primary" id="ol-go" disabled>▶ ${tr('Join')}</button>
+      </div>
+    </div>
+  </div>`, 'modal ol-modal');
+
+  // What's missing: what the server says where to download installs in one go,
+  // the rest (and Mega links) open in the browser.
+  OL.reopen = null;
+  const missing = c.missing;
+  const trackId = serverTrack(s.track).id;
+  let gets = [];
+  const drawMissing = (downloads = new Map()) => {
+    if (!missing.length && !c.cspShort) return;
+    const urlOf = id => downloads.get(!c.track && id === trackId ? 'track' : String(id).toLowerCase()) || '';
+    // Packs: several cars can share one download.
+    const seen = new Set();
+    gets = missing.map(id => ({ url: urlOf(id), name: id })).filter(g => g.url && !opensInBrowser(g.url) && !seen.has(g.url) && seen.add(g.url));
+    el.querySelector('#ol-missing').innerHTML = `<div class="section-title">${tr('Missing')}</div><div class="ol-missing">
+      ${c.cspShort ? `<button class="chip" data-ol-url="${esc(CSP_PAGE)}">${tr('Custom Shaders Patch {build} or newer', { build: c.csp })} ↗</button>` : ''}
+      ${missing.map(id => {
+        const url = urlOf(id);
+        if (url && !opensInBrowser(url)) return `<span class="chip dl" title="${esc(url)}">⬇ ${esc(id)}</span>`;
+        if (url) return `<button class="chip" data-ol-url="${esc(url)}" title="${esc(tr('Opens in the browser'))}">${esc(id)} ↗</button>`;
+        return `<button class="chip" data-ol-url="${esc(`https://www.overtake.gg/search/?q=${encodeURIComponent(id)}`)}" title="${esc(tr('Search OverTake'))}">${esc(id)} ↗</button>`;
+      }).join('')}</div>
+      ${gets.length ? `<button class="btn small subtle" id="ol-get">⬇ ${esc(trn(gets.length, 'Download and install 1 file', 'Download and install {n} files'))}</button>` : ''}`;
+  };
+  drawMissing();
+  const saved = await savedServers();
+  const fav = el.querySelector('#ol-fav');
+  const syncFav = list => fav.classList.toggle('on', list.favourites.some(f => serverKey(f) === serverKey(s)));
+  syncFav(saved);
+
+  const guid = await steamId(state.paths.steam);
+  const info = await serverSlots(s, guid).catch(err => { log(`online slots ${serverKey(s)}: ${err?.message}`); return null; });
+  const slots = info?.slots || null;
+  if (!el.isConnected) return;
+  if (info?.downloads?.size) drawMissing(info.downloads);
+  const free = new Map(), skins = new Map();
+  for (const slot of slots || []) {
+    const id = slot.model.toLowerCase();
+    if (!slot.connected) { free.set(id, (free.get(id) || 0) + 1); if (!skins.has(id)) skins.set(id, slot.skin); }
+  }
+  let pick = c.cars.find(id => !slots || free.get(String(id).toLowerCase()));
+  const drawCars = () => {
+    el.querySelector('#ol-cars').innerHTML = (s.cars || []).map(id => {
+      const car = ac.byCar.get(String(id).toLowerCase());
+      const n = slots ? free.get(String(id).toLowerCase()) || 0 : null;
+      const can = !!car && n !== 0;
+      return `<button class="ol-car ${id === pick ? 'sel' : ''}" data-ol-car="${esc(id)}" ${can ? '' : 'disabled'}>
+        ${car?.image ? `<img src="${esc(car.image)}" alt="">` : '<span class="ol-car-none"></span>'}
+        <b>${esc(car?.title || id)}</b>
+        <small>${!car ? tr('Not installed') : n == null ? '' : n ? trn(n, '1 free slot', '{n} free slots') : tr('Full')}</small></button>`;
+    }).join('');
+    const go = el.querySelector('#ol-go');
+    go.disabled = !pick || c.cspShort || !c.track;
+    el.querySelector('#ol-note').textContent = !s.pickup ? tr('Booking-only server: join it from AC or Content Manager.')
+      : !c.track ? tr("You don't have this track.")
+      : c.cspShort ? tr('This server needs a newer Custom Shaders Patch.')
+      : !pick ? (c.cars.length ? tr('No free slot for the cars you have.') : tr("You don't have any of this server's cars."))
+      : slots ? '' : tr("The server didn't answer; free slots aren't known.");
+    if (!s.pickup) go.disabled = true;
+  };
+  drawCars();
+
+  let joining = false;
+  el.addEventListener('click', async e => {
+    const url = e.target.closest('[data-ol-url]')?.dataset.olUrl;
+    if (url) { openExternal(url); return; }
+    if (joining) return;
+    const car = e.target.closest('[data-ol-car]');
+    if (car && !car.disabled) { pick = car.dataset.olCar; drawCars(); return; }
+    if (e.target.closest('#ol-fav')) {
+      await toggleFavourite(s);
+      syncFav(await savedServers());
+      return;
+    }
+    if (e.target.closest('#ol-get') && gets.length) {
+      OL.reopen = s;
+      close();
+      importSources(gets);
+      return;
+    }
+    if (!e.target.closest('#ol-go') || !pick) return;
+    // What it's waiting for (Steam starting and signing in can take a while) on
+    // the button; nothing in the dialog can be clicked meanwhile.
+    const go = el.querySelector('#ol-go'), label = go.innerHTML;
+    joining = true;
+    go.disabled = true;
+    el.dataset.busy = '1';
+    el.classList.add('joining');
+    el.querySelector('#ol-note').textContent = '';
+    const status = line => { go.textContent = `${tr(line)}…`; };
+    status('Writing race.ini');
+    try {
+      const car = ac.byCar.get(String(pick).toLowerCase());
+      const want = skins.get(car.id.toLowerCase());
+      const skin = car.skins.find(k => k.id.toLowerCase() === String(want).toLowerCase())?.id || car.skins[0]?.id || '';
+      await joinServer(state.paths, s, { car: car.id, skin, track: c.track.track.id, layout: c.track.layout?.id || '', password: el.querySelector('#ol-pass')?.value || '', features: info?.features, extended: info?.extended, onStatus: status });
+      markStarting('ac');
+      toast(tr('Joining {server}…', { server: name }));
+      delete el.dataset.busy;
+      close();
+      if (state.settings.minimizeOnLaunch) setTimeout(() => Neutralino.window.minimize(), 1500);
+    } catch (err) {
+      toast(err.message, true);
+      joining = false;
+      delete el.dataset.busy;
+      el.classList.remove('joining');
+      go.innerHTML = label;
+      drawCars();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Settings view
 
 const PATH_SETTINGS = [
@@ -5680,7 +6120,7 @@ async function applyPaths() {
 // (renderSettings), so the page being left doesn't stretch while Settings loads.
 function syncChrome() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
-  $('#app').classList.toggle('qd-mode', state.view === 'quickdrive' || state.view === 'academy');
+  $('#app').classList.toggle('qd-mode', state.view === 'quickdrive' || state.view === 'academy' || state.view === 'online');
   if (state.view !== 'settings') $('#app').classList.remove('settings-mode');
 }
 
@@ -5693,6 +6133,7 @@ function render() {
   if (state.view === 'games') renderGames();
   else if (state.view === 'mods') renderMods();
   else if (state.view === 'academy') renderAcademy();
+  else if (state.view === 'online') renderOnline();
   else if (state.view === 'community') renderCommunity();
   else if (state.view === 'settings') renderSettings();
 }
@@ -6257,6 +6698,78 @@ async function runSnapshots(dir) {
     state.game = 'ac'; renderSidebar(); state.view = 'games'; render(); await snap('backgrounds-games');
     state.view = 'settings'; render(); await snap('backgrounds-settings');
     await Neutralino.filesystem.remove(join(dir, file)).catch(() => {});
+    await Neutralino.app.exit();
+    return;
+  }
+  // --check-online: the Online page (lobby list, filters, a server's dialog) and the
+  // race.ini a join writes, to <snapshots>/online-sandbox/cfg instead of AC's.
+  if ((window.NL_ARGS || []).includes('--check-online')) {
+    state.view = 'online'; render();
+    for (let i = 0; i < 40 && !OL.list && !OL.error; i++) await wait(500);
+    await snap('online-all');
+    // With EVO picked in the sidebar: the note that this page is AC's, and Start EVO.
+    const game = state.game;
+    state.game = 'evo'; render(); await wait(1500);
+    await snap('online-other-game');
+    state.game = game; render(); await wait(1500);
+    const ac = await olAc();
+    const servers = OL.list?.servers || [];
+    const content = servers.map(s => olContent(s, ac));
+    log(`check-online: ${servers.length} servers (${OL.error || 'ok'}), ${servers.filter(s => s.clients > 0).length} with drivers, ${content.filter(c => c.ready).length} ready, ${content.filter(c => c.csp).length} need CSP, csp installed ${ac.csp.installed} build ${ac.csp.build}`);
+    log(`check-online tracks: ${['csp/2144/../spa', 'ks_nurburgring-layout_gp', 'tsukuba_circuit-full', 'nope-x'].map(t => `${t}=${(m => m ? `${m.track.id}/${m.layout?.id}` : '-')(ac.findTrack(serverTrack(t).id))}`).join(' ')}`);
+    // Pings: all servers measured, then the list by lowest ping.
+    const p0 = Date.now();
+    while (OL.pinging && Date.now() - p0 < 240000) await wait(1000);
+    const pings = [...OL.ping.values()];
+    log(`check-online ping: ${pings.length} of ${servers.length} measured in ${Date.now() - p0} ms after the list, ${pings.filter(Boolean).length} answered, fastest ${Math.min(...pings.filter(Boolean))} ms, ${pings.filter(ms => ms >= 500).length} at 500 ms or more`);
+    state.settings.olSort = 'ping'; render(); await wait(1500);
+    await snap('online-ping');
+    log(`check-online ping order: ${[...$('#ol-wrap').querySelectorAll('.ol-row')].slice(0, 5).map(r => `${r.querySelector('.ol-ping').textContent} ${r.querySelector('.ol-drivers').textContent}`).join(', ')}`);
+    state.settings.olSort = 'drivers';
+    OL.filters.ready = true; $('[data-ol-filter="ready"]').classList.add('on'); OL.search = ''; render(); await wait(1500);
+    await snap('online-ready');
+    const i = content.findIndex((c, j) => c.ready && servers[j].clients > 0 && servers[j].pickup && !servers[j].pass);
+    if (i >= 0) {
+      const s = servers[i];
+      openServer(s, ac); await wait(6000);
+      await snap('online-server');
+      const sb = `${norm(dir)}/online-sandbox`;
+      await ensureDir(`${sb}/cfg`);
+      await writeText(`${sb}/cfg/race.ini`, '[RACE]\r\nMODEL=abarth500\r\n\r\n[CAR_0]\r\nDRIVER_NAME=Test Driver\r\n\r\n[REMOTE]\r\nACTIVE=0\r\nOLD_KEY=1\r\n');
+      const c = content[i], car = ac.byCar.get(String(c.cars[0]).toLowerCase());
+      await joinServer({ ...state.paths, ac: { ...state.paths.ac, cfg: `${sb}/cfg` } }, s, { car: car.id, skin: car.skins[0]?.id || '', track: c.track.track.id, layout: c.track.layout?.id || '', password: 'pw\nX', start: false });
+      log(`check-online race.ini for ${serverKey(s)}: ${(await readText(`${sb}/cfg/race.ini`)).replace(/\r?\n/g, ' | ')}`);
+      $('#modal-root [data-close]')?.click();
+    } else log('check-online: no ready server with drivers to open');
+    OL.tab = 'favourites'; OL.filters.ready = false; render(); await wait(8000);
+    await snap('online-favourites');
+    // Missing content downloads from the hosts servers use, read by the installer
+    // (nothing is installed), then discarded. Mega and a dead link must fail.
+    for (const url of ['https://drive.google.com/file/d/14IYgzOWrZVnCFq1ma8PiSLJ_QUucCVbe/view?usp=drive_link',
+      'https://cup.acstuff.club/registry/car/fc_bmw_m4_g82/get',
+      'https://www.mediafire.com/file/98012a0ik2ehiu1/Dee_Accord12V3.rar/file',
+      'https://mega.nz/file/R28nkYoJ#om7aG684isk87uKw6a7IPlvR6SJVkH1teUw_qDE8DY0',
+      'https://disk.yandex.ru/d/EKggJh06QCmdmw']) {
+      const t0 = Date.now();
+      let last = 0;
+      try {
+        const src = await downloadContent(url, 'check', { onProgress: (done, total) => { last = done; if (total && done === total) log(`check-online download: ${done} of ${total}`); } });
+        const r = await prepareImport(src, state.paths);
+        log(`check-online download ${url}: ${basename(src.path)} ${last} bytes in ${Date.now() - t0} ms, found ${r.items.map(i => `${i.kind} ${i.id || i.title}`).join(', ') || 'nothing'}`);
+        r.session.forEach(discardImport);
+      } catch (err) { log(`check-online download ${url}: failed in ${Date.now() - t0} ms: ${err.message}`); }
+    }
+    // Cancelling a download 3 s in: no curl left running, nothing left behind.
+    const stop = new AbortController(), t0 = Date.now();
+    setTimeout(() => stop.abort(), 3000);
+    let got = 0;
+    try {
+      await downloadContent('https://cup.acstuff.club/registry/car/fc_bmw_m4_g82/get', 'cancel', { signal: stop.signal, onProgress: done => { got = done; } });
+      log('check-online cancel: download finished, not cancelled');
+    } catch (err) {
+      const left = await listDir(await appCacheDir('downloads'));
+      log(`check-online cancel: ${err.name} after ${Date.now() - t0} ms at ${got} bytes, curl running ${(await runningProcesses(['curl'])).has('curl')}, ${left.filter(e => e.type === 'DIRECTORY').length} download folders left`);
+    }
     await Neutralino.app.exit();
     return;
   }

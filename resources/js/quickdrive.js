@@ -6,7 +6,7 @@
 // WeatherFX, the weather is a CSP weather type and the time can be any hour, with
 // the keys Content Manager writes (__CM_WEATHER_TYPE, __CM_WEATHER_CONTROLLER,
 // __CM_DATE). Other keys in race.ini are left untouched.
-import { join, readText, writeText, exists, listDir, startProcess, log, IS_LINUX } from './util.js';
+import { join, readText, writeText, exists, listDir, startProcess, powershell, runningProcesses, log, IS_LINUX } from './util.js';
 import { runWithProton } from './steam.js';
 import { setIni, deleteKeys, removeSections, parseIni } from './ini.js';
 import { weatherTypeOf, isWetWeather, PROTON_DLL_OVERRIDE } from './csp.js';
@@ -422,12 +422,42 @@ export async function quickDrive(paths, { car, skin, skins = [], track, layout, 
 // Start acs.exe on the race.ini already written. Linux: it runs in AC's Proton
 // prefix, like Steam would start it. CSP is AC's dwrite.dll, which Wine only
 // loads with an override.
-export async function startAcs(paths) {
+// onStatus(line): what it's waiting for ('Starting Steam', …).
+export async function startAcs(paths, onStatus) {
   const acDir = paths.ac.install, acs = join(acDir, 'acs.exe');
   if (IS_LINUX) {
     const dllOverrides = (await exists(join(acDir, 'dwrite.dll'))) ? PROTON_DLL_OVERRIDE : '';
     await runWithProton({ exe: acs, cwd: acDir, appid: 244210, installDir: acDir, steamPath: paths.steam, dllOverrides });
-  } else await startProcess(acs, acDir);
+  } else {
+    await steamReady(paths.steam, onStatus);
+    onStatus?.('Starting Assetto Corsa');
+    await startProcess(acs, acDir);
+  }
+}
+
+// acs.exe started without Steam signed in has Steam start the game over, and
+// Steam opens AC's own launcher instead: the session in race.ini is lost. So
+// Steam is started first and given up to a minute and a half to sign in
+// (HKCU\Software\Valve\Steam\ActiveProcess ActiveUser: the account, 0 signed out).
+const steamUser = async () => Number(String((await powershell("(Get-ItemProperty -Path 'HKCU:/Software/Valve/Steam/ActiveProcess' -ErrorAction SilentlyContinue).ActiveUser")).stdOut || '').trim()) || 0;
+async function steamReady(steamPath, onStatus) {
+  const signedIn = async () => (await runningProcesses(['steam'])).size && (await steamUser());
+  if (await signedIn()) return;
+  if (!steamPath) { log('steam: not running, and no Steam folder to start it from'); return; }
+  log('steam: not signed in, starting it before acs.exe');
+  onStatus?.('Starting Steam');
+  await startProcess(join(steamPath, 'steam.exe'), steamPath, ['-silent']);
+  const t0 = Date.now();
+  onStatus?.('Waiting for Steam to sign in');
+  while (Date.now() - t0 < 90 * 1000) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (await signedIn()) {
+      await new Promise(r => setTimeout(r, 3000)); // signed in a moment before it takes games
+      log(`steam: signed in after ${Date.now() - t0} ms`);
+      return;
+    }
+  }
+  log('steam: still not signed in after 90 s, starting acs.exe anyway');
 }
 
 // cfg\assists.ini, as AC's launcher and Content Manager write it before a drive.

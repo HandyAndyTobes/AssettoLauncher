@@ -612,6 +612,7 @@ select { background: #222; border: 1px solid #383838; border-radius: 6px; height
 .drop-box code { background: #262626; padding: 1px 5px; border-radius: 4px; font-size: 12px; color: #ddd; }
 .modal.imp-modal { width: min(860px, 100%); display: flex; flex-direction: column; }
 .modal.imp-modal.slim { width: 460px; }
+.imp-actions { display: flex; justify-content: flex-end; padding: 12px 28px 20px; border-top: 1px solid #262626; }
 /* A window that can't be closed yet (reading dropped mods, closing mid-install) shows no close button. */
 .modal[data-busy] .close { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1140,3 +1141,63 @@ button.ay-target.picked { border-color: var(--red); border-radius: 6px; }
 .ay-result-actions { width: 100%; display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
 .ay-result-actions .btn { gap: 8px; padding: 0 18px; }
 .ay-result-actions .btn svg { width: 13px; height: 13px; }
+
+/* Online (Assetto Corsa servers) */
+.ol-note { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; padding: 12px 16px; border-radius: 8px; background: #1b1b1b; border: 1px solid #2c2c2c; border-left: 3px solid var(--red); font-size: 13px; color: #ccc; }
+.ol-note > span { flex: 1; min-width: 240px; }
+.online .ol-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.online .ol-filters[hidden] { display: none; }
+.ol-filter { height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid #333; color: #aaa; font-size: 12px; }
+.ol-filter:hover { border-color: #555; color: #ddd; }
+.ol-filter.on { background: var(--red-deep); border-color: var(--red); color: #fff; }
+.ol-sort { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.ol-sort > span { font-size: 12px; color: var(--muted); }
+.ol-list { display: flex; flex-direction: column; gap: 4px; }
+.ol-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) 180px 60px 64px 34px 120px; align-items: center; gap: 14px; padding: 10px 16px; border-radius: 8px; background: #1b1b1b; border: 1px solid transparent; text-align: left; }
+.ol-row:hover { border-color: #3a3a3a; background: #202020; }
+.ol-row.off { opacity: .5; }
+.ol-star { font-size: 17px; color: #444; text-align: center; }
+.ol-star:hover { color: #999; }
+.ol-star.on, #ol-fav.on { color: #f2c94c; }
+.ol-name { min-width: 0; }
+.ol-name b, .ol-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-name b { font-size: 14px; font-weight: 600; }
+.ol-name small { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.ol-lock { font-size: 11px; margin-right: 6px; }
+.ol-session { font-size: 12px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ol-drivers { font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; color: #ddd; }
+.ol-ping { font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; color: #ccc; white-space: nowrap; }
+.ol-ping.good { color: var(--green); }
+.ol-ping.far { color: #e0a64a; }
+.ol-ping.none { color: #555; }
+.ol-flag img { width: 24px; height: 16px; object-fit: cover; border-radius: 2px; display: block; }
+.ol-state { justify-self: end; font-size: 11px; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.ol-state.ok { background: rgba(60, 207, 110, .14); color: var(--green); }
+.ol-state.bad { background: #262626; color: var(--muted); }
+.ol-state.warn { background: rgba(242, 201, 76, .12); color: #f2c94c; }
+.ol-more { display: block; margin: 16px auto 0; }
+
+.modal.ol-modal { width: min(920px, 100%); }
+.ol-detail-head { padding: 32px 36px 26px; background: #181818 center / cover no-repeat; border-bottom: 1px solid #262626; }
+.ol-detail-head h2 { margin: 0 48px 6px 0; font-size: 20px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+.ol-detail-head p { margin: 0; color: var(--muted); font-size: 14px; }
+.ol-detail-head .chip.on { background: var(--red-deep); color: #fff; }
+.ol-detail-body { padding: 4px 36px 30px; }
+.ol-cars { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.ol-cars .loading { grid-column: 1 / -1; padding: 40px; }
+.ol-car { display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 8px; background: #1f1f1f; border: 1px solid #2a2a2a; text-align: left; }
+.ol-car:hover:not([disabled]) { border-color: #555; }
+.ol-car.sel { border-color: var(--red); background: #241717; }
+.ol-car[disabled] { opacity: .45; }
+.ol-car img, .ol-car-none { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: #262626; display: block; }
+.ol-car b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-car small { font-size: 11.5px; color: var(--muted); min-height: 14px; }
+.ol-missing { display: flex; flex-wrap: wrap; gap: 6px; }
+.ol-missing button.chip:hover { background: #333; color: #fff; }
+.ol-missing .chip.dl { color: #ddd; }
+#ol-get { margin-top: 12px; }
+.ol-modal.joining .ol-cars, .ol-modal.joining #ol-fav, .ol-modal.joining #ol-get, .ol-modal.joining .close { pointer-events: none; opacity: .5; }
+.ol-modal.joining #ol-go { cursor: progress; }
+.ol-join { display: flex; align-items: center; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
+.ol-pass { width: 220px; padding-left: 14px; background-image: none; }
+.ol-join-note { flex: 1; min-width: 160px; color: var(--muted); font-size: 13px; }
