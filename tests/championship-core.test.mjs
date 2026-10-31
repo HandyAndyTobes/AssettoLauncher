@@ -190,3 +190,15 @@ test('standings: points, wins, then best finish', () => {
   assert.equal(rows[0].car, 'my_gt3');
   assert.equal(rows[1].car, 'a');
 });
+
+// The shipped season's fallback patterns must find the circuit, and not others
+// whose names merely contain its letters (Valencia is "Circuit Ricardo Tormo").
+test('season patterns match their own circuit only', async () => {
+  const { readFileSync } = await import('node:fs');
+  const season = JSON.parse(readFileSync(new URL('../resources/data/championships/gtwc-endurance-2026.json', import.meta.url), 'utf8'));
+  const t = (id, title) => ({ id, title, playable: true, layouts: [{ id: '', name: title, aiLine: true }] });
+  const installed = [t('fn_valencia', 'Circuit Ricardo Tormo'), t('ks_spain_test', 'Spanish Test Track'), t('my_paul_ricard', 'Paul Ricard'), t('spa_2022', 'Spa')];
+  const only = round => matchRound({ tracks: round.tracks.filter(x => x.match) }, installed).options.map(o => o.track);
+  assert.deepEqual(only(season.rounds[0]), ['my_paul_ricard']);
+  assert.deepEqual(only(season.rounds[2]), ['spa_2022']);
+});

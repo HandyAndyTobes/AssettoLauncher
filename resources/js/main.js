@@ -5342,9 +5342,13 @@ function chSetup(season, tracks, cars) {
     <div class="section-title">${tr('Rounds')}</div>
     <div class="ch-setup-rounds">${season.rounds.map((r, i) => {
       const m = matches[i];
-      const opts = m.options.length ? m.options : withAi;
+      // The round's own track first; any other track with an AI line can stand in
+      // for it (a mod that looks wrong, or a preference), or the round can go.
+      const own = new Set(m.options.map(o => `${o.track}|${o.layout}`));
+      const option = o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(optLabel(o))}</option>`;
+      const others = withAi.filter(o => !own.has(`${o.track}|${o.layout}`)).map(option).join('');
       return `<div class="ch-round ${m.best ? '' : 'off'}"><b>${i + 1}</b><div><span>${esc(r.name)}</span>${m.best ? '' : `<small>${esc(tr('Not installed: pick another track, or drop the round'))}</small>`}</div>
-        <select data-chs-round="${i}">${m.best ? '' : `<option value="">${esc(tr('Drop this round'))}</option>`}${opts.map(o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(optLabel(o))}</option>`).join('')}</select></div>`;
+        <select data-chs-round="${i}">${m.best ? m.options.map(option).join('') : ''}<option value="">${esc(tr('Drop this round'))}</option>${others ? `<optgroup label="${esc(tr('Other tracks'))}">${others}</optgroup>` : ''}</select></div>`;
     }).join('')}</div>
     <div class="ch-actions"><span class="ch-laps" id="chs-laps"></span><button class="btn primary" id="chs-go">${tr('Start season')}</button></div>
   </div>`, 'modal ch-modal wide');
