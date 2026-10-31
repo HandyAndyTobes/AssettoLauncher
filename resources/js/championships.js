@@ -48,7 +48,7 @@ export async function startRound(paths, active, index, tracks, { start = true } 
   const round = active.rounds[index];
   const track = tracks.find(t => t.id === round.track);
   const layout = track?.layouts.find(l => l.id === round.layout);
-  if (!layout) throw new Error(`${round.name}: the track ${round.track} isn't installed any more. Pick another in the season's rounds.`);
+  if (!layout) throw new Error(`${round.name}: the track ${round.track} isn't installed. Choose another for this round on the Championships page.`);
   const s = active.settings;
   const csp = await readCsp(paths).catch(() => null);
   const base = await readAcSession(paths, csp).catch(() => defaultAcSession());

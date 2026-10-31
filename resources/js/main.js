@@ -5151,6 +5151,10 @@ function resultCard(ev, r, res) {
 const CH = { seasons: null };
 const chSeasons = async () => (CH.seasons ||= await loadSeasons());
 const chName = name => (name === PLAYER ? tr('You') : name);
+// Every installed layout a round can be driven on (AC can load it, it has an AI
+// line): the substitutes for a round whose track isn't installed.
+const chTrackOptions = tracks => tracks.flatMap(t => t.playable === false ? [] : t.layouts.filter(l => l.aiLine).map(l => ({ track: t.id, layout: l.id, title: t.title, layoutName: l.name })));
+const chOptLabel = o => `${o.title}${o.layoutName && o.layoutName !== o.title ? ` · ${o.layoutName}` : ''}`;
 
 // AC closed after a round: score it from race_out.json, save it, say how it went.
 async function championshipClosed(l) {
@@ -5241,6 +5245,10 @@ async function renderChampionships() {
   const me = rows.findIndex(r => r.player) + 1;
   const next = nextRoundIndex(a);
   const carTitle = id => cars.find(c => c.id === id)?.title || id;
+  // The next round's track removed since the season began: pick a substitute or drop it.
+  const options = chTrackOptions(tracks);
+  const missing = next >= 0 && !options.some(o => o.track === a.rounds[next].track && o.layout === a.rounds[next].layout);
+  const picker = `<div class="ch-missing"><select id="ch-sub"><option value="">${esc(tr('Drop this round'))}</option>${options.map(o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(chOptLabel(o))}</option>`).join('')}</select><button class="btn small" id="ch-use">${esc(tr('Use'))}</button></div>`;
   wrap.innerHTML = `<div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2>
       <p>${esc(carTitle(a.car))} · ${esc(trn(a.grid.length, '1 AI car', '{n} AI cars'))} · ${esc(tr('{n} min races', { n: a.settings.raceMinutes }))}</p></div>
       <span class="ch-badge">P${me} · ${rows[me - 1].points} ${tr('pts')}</span></div>
@@ -5248,16 +5256,37 @@ async function renderChampionships() {
       <div class="ch-col"><div class="section-title">${tr('Calendar')}</div>${a.rounds.map((r, i) => {
         const res = a.results.find(x => x.round === i);
         const t = tracks.find(x => x.id === r.track);
-        const cls = r.dropped ? 'dropped' : res ? 'done' : i === next ? 'next' : 'later';
+        const cls = r.dropped ? 'dropped' : res ? 'done' : i === next ? `next${missing ? ' off' : ''}` : 'later';
         const right = r.dropped ? `<span class="ch-badge">${tr('Dropped')}</span>`
           : res ? `<span class="ch-badge ok">P${res.pos} · ${res.points}${res.pole === PLAYER ? ` · ${tr('pole')}` : ''}</span>`
+          : i === next && missing ? `<span class="ch-badge warn">${esc(tr('Missing'))}</span>`
           : i === next ? `<button class="btn primary" data-launch-game="ac" id="ch-start">▶ ${tr('Start round')}</button>` : '';
-        return `<div class="ch-round ${cls}"><b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${esc(t ? t.title : r.track)}${r.layout ? ` · ${esc(r.layout)}` : ''}</small></div>${right}</div>`;
+        const where = i === next && missing ? esc(tr('Track not installed — pick another or drop this round')) : `${esc(t ? t.title : r.track)}${r.layout ? ` · ${esc(r.layout)}` : ''}`;
+        return `<div class="ch-round ${cls}"><b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${where}</small></div>${right}</div>${i === next && missing ? picker : ''}`;
       }).join('')}</div>
       <div class="ch-col"><div class="section-title">${tr('Standings')}</div><table class="ch-table">${rows.map((r, i) => `<tr class="${r.player ? 'me' : ''}"><td>${i + 1}</td><td>${esc(chName(r.name))}</td><td class="muted">${esc(carTitle(r.car))}</td><td class="n">${r.points}</td></tr>`).join('')}</table></div>
     </div>
     <button class="btn small subtle" id="ch-abandon">${tr('Abandon season')}</button>`;
   syncRunning(wrap);
+  $('#ch-use')?.addEventListener('click', async e => {
+    const v = $('#ch-sub').value;
+    const [track, layout] = v.split('|');
+    const r = a.rounds[next];
+    const rounds = a.rounds.map((x, i) => (i === next ? { ...x, track: track || x.track, layout: v ? layout || '' : x.layout, dropped: !v } : x));
+    if (rounds.every(x => x.dropped)) { toast(tr('Keep at least one round.'), true); return; }
+    e.currentTarget.disabled = true;
+    a.rounds = rounds;
+    log(`championship round ${next + 1}: ${r.track}/${r.layout} not installed, ${v ? `using ${track}/${layout}` : 'dropped'}`);
+    // Dropping the last round left ends the season, as finishing it would.
+    if (nextRoundIndex(a) < 0) {
+      const rows = champStandings(season, a);
+      const mine = rows.find(x => x.player);
+      p.history = [{ seasonId: a.seasonId, name: season.name, car: a.car, rank: rows.indexOf(mine) + 1, points: mine.points, at: Date.now() }, ...p.history];
+      p.active = null;
+    }
+    await saveChampProgress(p);
+    renderChampionships();
+  });
   $('#ch-start')?.addEventListener('click', async e => {
     if (isUp('ac')) return; // the running-game button handles Close
     e.currentTarget.disabled = true;
@@ -5287,8 +5316,8 @@ async function renderChampionships() {
 // (matched, a layout choice, or a substitute / Drop for a missing one).
 function chSetup(season, tracks, cars) {
   const gt3 = gt3Cars(cars);
-  const withAi = tracks.flatMap(t => t.playable === false ? [] : t.layouts.filter(l => l.aiLine).map(l => ({ track: t.id, layout: l.id, title: t.title, layoutName: l.name })));
-  const optLabel = o => `${o.title}${o.layoutName && o.layoutName !== o.title ? ` · ${o.layoutName}` : ''}`;
+  const withAi = chTrackOptions(tracks);
+  const optLabel = chOptLabel;
   const maxGrid = gt3.models.length * 2;
   const sizes = [15, 20, 25].filter(n => n <= maxGrid);
   if (!sizes.length) sizes.push(maxGrid);
@@ -6953,6 +6982,13 @@ async function runSnapshots(dir) {
     await saveChampProgress({ active: a, history: [] });
     render(); await wait(2500); await snap('champ-mid');
     log(`check-champ standings: ${champStandings(season, a).slice(0, 5).map(r => `${chName(r.name)} ${r.points}`).join(', ')}`);
+    // The next round's track gone since the season began: the substitute picker.
+    const gone = nextRoundIndex(a);
+    if (gone >= 0) {
+      await saveChampProgress({ active: { ...a, rounds: a.rounds.map((r, i) => (i === gone ? { ...r, track: 'no_such_track_x', layout: '' } : r)) }, history: [] });
+      render(); await wait(2500); await snap('champ-missing');
+      log(`check-champ missing: picker ${$('#ch-sub') ? `shown with ${$('#ch-sub').options.length} options` : 'NOT shown'}, start button ${$('#ch-start') ? 'shown' : 'hidden'}`);
+    }
     await saveChampProgress(saved);
     await Neutralino.app.exit();
     return;
