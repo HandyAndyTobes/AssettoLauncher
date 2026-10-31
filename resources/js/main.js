@@ -5200,11 +5200,11 @@ function chResultCard(season, a, result, before, finished) {
 async function renderChampionships() {
   const g = gameByKey('ac');
   if (!isInstalled(g) || !state.paths?.ac?.install) {
-    main.innerHTML = `<div class="view scaled"><div class="page">${olOtherGameNote()}<div class="empty"><h3>${tr('Assetto Corsa not found')}</h3>${tr('Championships are raced in Assetto Corsa, installed through Steam.')}</div></div></div>`;
+    main.innerHTML = `<div class="view scaled"><div class="page">${olOtherGameNote('This page runs Assetto Corsa championships. For {game}, career and championships are in the game itself.')}<div class="empty"><h3>${tr('Assetto Corsa not found')}</h3>${tr('Championships are raced in Assetto Corsa, installed through Steam.')}</div></div></div>`;
     main.querySelector('[data-ol-start]')?.addEventListener('click', e => launchGame(gameByKey(e.currentTarget.dataset.olStart)));
     return;
   }
-  main.innerHTML = `<div class="view scaled mods champ">${olOtherGameNote()}<div id="ch-wrap"><div class="loading">${tr('Loading…')}</div></div></div>`;
+  main.innerHTML = `<div class="view scaled mods champ">${olOtherGameNote('This page runs Assetto Corsa championships. For {game}, career and championships are in the game itself.')}<div id="ch-wrap"><div class="loading">${tr('Loading…')}</div></div></div>`;
   main.querySelector('[data-ol-start]')?.addEventListener('click', e => launchGame(gameByKey(e.currentTarget.dataset.olStart)));
   const [seasons, p, tracks, cars] = await Promise.all([chSeasons(), champProgress(), getItems(g, 'tracks'), getItems(g, 'cars')]);
   if (state.view !== 'championships') return;
@@ -5284,7 +5284,6 @@ function chSetup(season, tracks, cars) {
   const maxGrid = gt3.models.length * 2;
   const sizes = [15, 20, 25].filter(n => n <= maxGrid);
   if (!sizes.length) sizes.push(maxGrid);
-  const pick = { car: gt3.player[0].id };
   const matches = season.rounds.map(r => matchRound(r, tracks));
   const { el, close } = modal(`<div class="qd ch-setup">
     <header class="qd-head"><h2>${esc(season.name)}</h2><div class="qd-sub">${tr('Choose once for the whole season.')}</div></header>
@@ -5333,12 +5332,21 @@ function chSetup(season, tracks, cars) {
       return { name: r.name, track: track || '', layout: layout || '', dropped: !v };
     });
     if (rounds.every(r => r.dropped)) { toast(tr('Keep at least one round.'), true); return; }
-    const p = await champProgress();
-    p.active = newSeason(season, {
-      car: el.querySelector('#chs-car').value, skin: el.querySelector('#chs-skin').value, rounds, models: gt3.models,
-      settings: { gridSize: Number(el.querySelector('#chs-grid').value), level: Number(el.querySelector('#chs-level').value), aggression: Number(el.querySelector('#chs-agg').value), raceMinutes: Number(el.querySelector('#chs-min').value), practice: el.querySelector('#chs-prac').checked },
-    });
-    await saveChampProgress(p);
+    const go = el.querySelector('#chs-go');
+    go.disabled = true;
+    let p;
+    try {
+      p = await champProgress();
+      p.active = newSeason(season, {
+        car: el.querySelector('#chs-car').value, skin: el.querySelector('#chs-skin').value, rounds, models: gt3.models,
+        settings: { gridSize: Number(el.querySelector('#chs-grid').value), level: Number(el.querySelector('#chs-level').value), aggression: Number(el.querySelector('#chs-agg').value), raceMinutes: Number(el.querySelector('#chs-min').value), practice: el.querySelector('#chs-prac').checked },
+      });
+      await saveChampProgress(p);
+    } catch (err) {
+      toast(err.message, true);
+      go.disabled = false;
+      return;
+    }
     log(`championship: new ${season.id} with ${p.active.car}, grid ${p.active.grid.length}`);
     close();
     renderChampionships();
@@ -5466,13 +5474,14 @@ async function olAc() {
 // The page lists Assetto Corsa servers only: ACC, EVO and Rally list theirs
 // inside the game (EVO's list comes from Kunos's backend through the game
 // itself, nothing outside can read it). With one of those picked in the
-// sidebar, a note says so, with a button that starts it.
-function olOtherGameNote() {
+// sidebar, a note says so, with a button that starts it. Callers on other
+// pages (Championships) pass their own text, with {game} where the name goes.
+function olOtherGameNote(text = 'This page lists Assetto Corsa servers. For {game}, online racing is in the game itself.') {
   const other = gameByKey(state.game);
   if (!other || other.key === 'ac' || !isInstalled(other)) return '';
   const name = `${other.title} ${other.sub}`.trim();
   return `<div class="ol-note">
-    <span>${tr('This page lists Assetto Corsa servers. For {game}, online racing is in the game itself.', { game: name })}</span>
+    <span>${tr(text, { game: name })}</span>
     <button class="btn small subtle" data-ol-start="${esc(other.key)}">▶ ${tr('Start {game}', { game: other.sub || other.title })}</button>
   </div>`;
 }
