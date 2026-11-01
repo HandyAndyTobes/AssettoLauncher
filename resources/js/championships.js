@@ -5,11 +5,11 @@
 // through Quick Drive's race.ini writer: a practice/qualifying/race weekend
 // with the season's grid.
 import { storageGet, storageSet, log, exists, join } from './util.js';
-import { buildGrid, raceLaps } from './championship-core.js';
+import { buildGrid, buildTeamGrid, playerTeam, raceLaps } from './championship-core.js';
 import { quickDrive, readAcSession, defaultAcSession } from './quickdrive.js';
 import { readCsp } from './csp.js';
 
-export const SEASON_FILES = ['gtwc-endurance-2026.json'];
+export const SEASON_FILES = ['gtwc-endurance-2026.json', 'formula-world-2026.json', 'btcc-2026.json'];
 
 export async function loadSeasons() {
   const list = [];
@@ -19,18 +19,36 @@ export async function loadSeasons() {
   return list;
 }
 
-// { active: the running season or null, history: [{ seasonId, name, car, rank, points, at }] }
+// { running: { [seasonId]: a season in progress, one per series },
+//   history: [{ seasonId, name, car, rank, points, at }] }. Saved before there could
+// be one per series, progress has `active` (the one running): moved into running.
+// The self-test (--check-championships) keeps its seasons under another key, so
+// a launcher open at the same time never sees them or loses the player's.
+let progressKey = 'championships';
+export const useTestProgress = () => { progressKey = 'championships-check'; };
 export async function champProgress() {
-  const p = await storageGet('championships', null);
-  return { active: p?.active || null, history: p?.history || [] };
+  const p = await storageGet(progressKey, null);
+  const running = { ...(p?.running || {}) };
+  if (p?.active?.seasonId && !running[p.active.seasonId]) running[p.active.seasonId] = p.active;
+  return { running, history: p?.history || [] };
 }
-export const saveChampProgress = p => storageSet('championships', p);
+export const saveChampProgress = p => storageSet(progressKey, p);
 
-// A new season's saved state, its grid built now and kept all season.
-export function newSeason(season, { car, skin, settings, rounds, models }) {
+// A new season's saved state, its grid built now and kept all season. A
+// formula season's grid is `teams` (championship-core.js teamsFor) in pairs,
+// the player in one of them. Other seasons draw from `models` (a touring season's:
+// the player's group, championship-core.js touringModels), season.perModel of each
+// at most. settings.speed: the season's km/h for race laps.
+export function newSeason(season, { car, skin, settings, rounds, models, teams }) {
+  const s = { ...settings, speed: season.speed || 175 };
+  if (season.category === 'formula') {
+    const grid = buildTeamGrid(teams, { car, skin, size: s.gridSize, level: s.level });
+    if (!grid.length) throw new Error(`${car} has no AI data, so there's no grid to race.`);
+    return { seasonId: season.id, startedAt: Date.now(), car, skin, team: playerTeam(teams, car, skin).name, settings: s, rounds, grid, results: [] };
+  }
   return {
-    seasonId: season.id, startedAt: Date.now(), car, skin, settings, rounds,
-    grid: buildGrid(models, { size: settings.gridSize, level: settings.level }),
+    seasonId: season.id, startedAt: Date.now(), car, skin, settings: s, rounds,
+    grid: buildGrid(models, { size: s.gridSize, level: s.level, perModel: season.perModel || 2 }),
     results: [],
   };
 }
@@ -61,7 +79,7 @@ export async function startRound(paths, active, index, tracks, { start = true } 
   const boxes = Number(layout.pitboxes) || 0;
   if (!boxes) log(`championship round ${index + 1}: ${round.track}/${round.layout} doesn't give its pit boxes, using the full grid`);
   const grid = active.grid.slice(0, boxes ? Math.max(1, Math.min(boxes, 64) - 1) : 63);
-  const laps = raceLaps(s.raceMinutes, layout.length);
+  const laps = raceLaps(s.raceMinutes, layout.length, s.speed);
   const session = {
     ...base, mode: 'weekend',
     weekend: { practice: s.practice ? 10 : 0, qualifying: 10, laps },

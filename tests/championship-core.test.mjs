@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchRound, gt3Cars, raceLaps, buildGrid, NAMES } from '../resources/js/championship-core.js';
+import { matchRound, gt3Cars, formulaCars, teamsFor, buildTeamGrid, prettySkin, touringCars, touringGroup, touringModels, raceLaps, buildGrid, NAMES } from '../resources/js/championship-core.js';
 
 const layout = (id, aiLine = true, length = '5800 m', pitboxes = '40') => ({ id, name: id || 'Main', length, pitboxes, aiLine });
 const tracks = [
@@ -201,4 +201,128 @@ test('season patterns match their own circuit only', async () => {
   const only = round => matchRound({ tracks: round.tracks.filter(x => x.match) }, installed).options.map(o => o.track);
   assert.deepEqual(only(season.rounds[0]), ['my_paul_ricard']);
   assert.deepEqual(only(season.rounds[2]), ['spa_2022']);
+});
+
+const f1 = (id, extra = {}) => car(id, { tags: ['rwd', 'race', 'gp', 'singleseater'], ...extra });
+
+test('formulaCars: Grand Prix / F1 / Formula single-seaters only', () => {
+  const r = formulaCars([
+    f1('ks_ferrari_sf70h'),
+    f1('rss_formula_hybrid_2024', { tags: ['Formula', 'singleseater'] }),
+    f1('brabham_bt46b', { tags: ['singleseater'], carClass: "F1 '78" }),
+    f1('ks_praga_r1', { tags: ['#lmp3', 'singleseater'] }),
+    f1('formula_e_gen1', { tags: ['openwheel', 'formula e'] }),
+    f1('tatuusfa1', { tags: ['#Fabarth', 'singleseater'] }),
+    f1('bmw_z4_gt3', { tags: ['gt3'] }),
+    f1('no_ai_f1', { ai: false }),
+  ]);
+  assert.deepEqual(r.player.map(c => c.id), ['ks_ferrari_sf70h', 'rss_formula_hybrid_2024', 'brabham_bt46b']);
+  assert.equal(r.models.length, 3);
+});
+
+test('teamsFor: one car, a team per skin; a pack, a team per car', () => {
+  const hybrid = f1('rss_formula_hybrid_2024', { year: 2024, title: 'Hybrid', skins: [{ id: 'red_racing_01' }, { id: 'blue_team' }, { id: 'green' }] });
+  const pack = ['ferrari_643', 'williams_fw14', 'mclaren_mp4-6'].map(n => f1(`asr_1991_${n}`, { year: 1991, title: n, skins: [{ id: '27' }, { id: '28' }, { id: 'test' }] }));
+  const other = f1('rss_formula_hybrid_2023', { year: 2023 });
+  const models = [hybrid, other, ...pack];
+  assert.deepEqual(teamsFor(hybrid, models).map(t => t.name), ['Red Racing', 'Blue Team', 'Green']);
+  const t = teamsFor(pack[0], models);
+  assert.deepEqual(t.map(x => x.model), pack.map(c => c.id));
+  assert.deepEqual(t[0].skins, ['27', '28']);
+  assert.equal(teamsFor(f1('ks_lotus_72d', { year: 1972 }), models).length, 0); // no AI of its own: no grid
+});
+
+test('buildTeamGrid: pairs, the player with one teammate, teams come round again', () => {
+  let seed = 3;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const teams = ['a', 'b', 'c'].map(s => ({ model: 'x', skins: [s], name: prettySkin(s) }));
+  const grid = buildTeamGrid(teams, { car: 'x', skin: 'b', size: 9, level: 90, rand });
+  assert.equal(grid.length, 9);
+  assert.equal(grid[0].team, 'B');                           // the player's teammate
+  assert.equal(grid.filter(g => g.team === 'B').length, 1);  // only the teammate: other teams fill the rest
+  assert.equal(new Set(grid.map(g => g.name)).size, 9);
+  const counts = ['A', 'C'].map(n => grid.filter(g => g.team === n).length);
+  assert.deepEqual(counts, [4, 4]);                           // two rounds of the other teams
+  assert.deepEqual(buildTeamGrid([], { car: 'x', skin: 'b', size: 5, level: 90 }), []);
+});
+
+test('raceLaps at a season speed', () => {
+  assert.equal(raceLaps(30, '5793 m', 215), 19); // 107.5 km / 5.793 = 18.6
+});
+
+test('formula season patterns skip rallycross, dirt and historic layouts', async () => {
+  const { readFileSync } = await import('node:fs');
+  const season = JSON.parse(readFileSync(new URL('../resources/data/championships/formula-world-2026.json', import.meta.url), 'utf8'));
+  const t = (id, title) => ({ id, title, playable: true, layouts: [{ id: '', name: title, aiLine: true }] });
+  const installed = [t('Monaco_Rallycross_DiRT3', 'Monaco Rallycross DiRT3'), t('monaco_2019', 'Monaco GP Circuit'), t('rmi_dirtsdn_miami', 'DiRT Showdown - Miami'),
+    t('ks_silverstone1967', 'Silverstone 1967'), t('my_silverstone', 'Silverstone'), t('acu_barcelona-city', 'Barcelona Memorial Run'), t('canadian_tire', 'Canadian Tire Motorsport Park'), t('ks_monza66', 'Monza 1966')];
+  const only = name => matchRound({ tracks: season.rounds.find(r => r.name === name).tracks.filter(x => x.match) }, installed).options.map(o => o.track);
+  assert.deepEqual(only('Monaco'), ['monaco_2019']);
+  assert.deepEqual(only('Miami'), []);
+  assert.deepEqual(only('Silverstone'), ['my_silverstone']);
+  assert.deepEqual(only('Barcelona-Catalunya'), []);
+  assert.deepEqual(only('Montréal'), []);
+  assert.deepEqual(only('Monza'), []);
+  assert.equal(season.rounds.length, 22);
+});
+
+test('teamsFor: driver liveries of one team make one team; a pack drops its shared title', () => {
+  const skins = ['00_fh_2024_24', '01_fh_2023_23', 'MCL39_4_Norris', 'MCL39_81_Piastri', 'SF25_44_Hamilton'].map(id => ({ id }));
+  const hybrid = f1('rss_formula_hybrid_2024', { year: 2024, skins });
+  assert.deepEqual(teamsFor(hybrid, [hybrid]).map(t => `${t.name}:${t.skins.length}`), ['Fh:2', 'MCL39:2', 'SF25:1']);
+  const pack = ['Ferrari 643', 'Williams FW14', 'Jordan 191'].map((n, i) => f1(`asr_1991_${i}`, { year: 1991, title: `ASR Formula 1991 - ${n}` })).concat(f1('asr_1991_x', { year: 1991, title: "Dallara 191 '91" }));
+  assert.deepEqual(teamsFor(pack[0], pack).map(t => t.name), ['Ferrari 643', 'Williams FW14', 'Jordan 191', "Dallara 191 '91"]);
+});
+
+test('touringGroup: TCR, or a BTCC era by year; other cars none', () => {
+  assert.equal(touringGroup(car('fw_cupra_tcr_2024', { tags: ['TCR'] })), 'TCR');
+  assert.equal(touringGroup(car('x', { carClass: 'TCR' })), 'TCR');
+  assert.equal(touringGroup(car('vauxhall_cavalier_btcc_1995', { year: 1995 })), 'BTCC 1990s');
+  assert.equal(touringGroup(car('pm3dm_volvo_s40', { year: 1999, tags: ['#BTCC'] })), 'BTCC 1990s');
+  assert.equal(touringGroup(car('ngtc_honda_civic', { year: 2023 })), 'BTCC NGTC');
+  assert.equal(touringGroup(car('ks_bmw_m4_gt3')), '');
+});
+
+test('touringCars and touringModels: a grid of the player car\'s group only', () => {
+  const cars = [
+    car('fw_audi_rs3_tcr_2024', { tags: ['TCR'] }), car('fw_cupra_tcr_2024', { tags: ['TCR'] }),
+    car('vauxhall_cavalier_btcc_1990', { year: 1990 }), car('btcc_1991_toyota_carina', { year: 1991 }),
+    car('btcc_lonely_2005', { year: 2005, ai: false }), car('ks_bmw_m4_gt3'),
+  ];
+  const r = touringCars(cars);
+  assert.deepEqual(r.player.map(c => c.id), ['btcc_1991_toyota_carina', 'vauxhall_cavalier_btcc_1990', 'fw_audi_rs3_tcr_2024', 'fw_cupra_tcr_2024']);
+  assert.deepEqual(touringModels(cars[0], r.models).map(c => c.id), ['fw_audi_rs3_tcr_2024', 'fw_cupra_tcr_2024']);
+});
+
+test('buildGrid with perModel fills past two of a model', () => {
+  const grid = buildGrid([car('a'), car('b'), car('c')], { size: 20, level: 90, perModel: 6 });
+  assert.equal(grid.length, 18);
+  for (const id of ['a', 'b', 'c']) assert.equal(grid.filter(g => g.model === id).length, 6);
+});
+
+test('raceLaps reads miles', () => {
+  assert.equal(raceLaps(30, '2.176 miles', 145), 21); // 72.5 km / 3.5 km
+});
+
+test('scoreRound and standings: a fastest lap point when the season has one', () => {
+  const s = { ...season, fastestLap: 1 };
+  const o = out();
+  o.sessions[1].bestLaps = [{ car: 0, time: 90000 }, { car: 1, time: 90500 }];
+  const { result } = scoreRound(s, active, o, 0);
+  assert.equal(result.fastest, PLAYER);
+  assert.equal(result.points, 18 + 1);
+  const me = standings(s, { ...active, results: [result] }).find(r => r.player);
+  assert.equal(me.points, 19);
+  assert.equal(scoreRound(season, active, o, 0).result.fastest, undefined); // no fastest lap point, none recorded
+});
+
+test('touring season patterns: Donington 1938 and other Crofts stay out', async () => {
+  const { readFileSync } = await import('node:fs');
+  const season = JSON.parse(readFileSync(new URL('../resources/data/championships/btcc-2026.json', import.meta.url), 'utf8'));
+  const t = (id, title) => ({ id, title, playable: true, layouts: [{ id: '', name: title, aiLine: true }] });
+  const installed = [t('donington1938', 'Donington 1938'), t('my_donington', 'Donington Park'), t('croft_circuit', 'Croft'), t('crofton_hill', 'Crofton Hill')];
+  const only = name => matchRound({ tracks: season.rounds.find(r => r.name === name).tracks.filter(x => x.match) }, installed).options.map(o => o.track);
+  assert.deepEqual(only('Donington Park GP'), ['my_donington']);
+  assert.deepEqual(only('Croft'), ['croft_circuit']);
+  assert.equal(season.rounds.length, 10);
 });

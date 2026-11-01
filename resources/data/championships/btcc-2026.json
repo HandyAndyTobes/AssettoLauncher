@@ -1,0 +1,25 @@
+{
+  "id": "british-touring-2026",
+  "name": "British Touring Car Series 2026",
+  "category": "touring",
+  "class": "Touring cars",
+  "speed": 145,
+  "perModel": 6,
+  "gridSizes": [11, 15, 19, 23],
+  "gridDefault": 19,
+  "points": [20, 17, 15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+  "pole": 1,
+  "fastestLap": 1,
+  "rounds": [
+    { "name": "Donington Park National", "search": "Donington Park", "country": "England", "tracks": [{ "id": "rj_doningtonpark2023", "layout": "nationalhr" }, { "id": "doningtonpark2018", "layout": "national" }, { "match": "donington(?!.*19\\d\\d)" }] },
+    { "name": "Brands Hatch Indy", "search": "Brands Hatch", "country": "England", "tracks": [{ "id": "ks_brands_hatch", "layout": "indy" }, { "match": "brands.?hatch" }] },
+    { "name": "Snetterton 300", "search": "Snetterton", "country": "England", "tracks": [{ "id": "snetterton", "layout": "snetterton300" }, { "id": "snetterton2011", "layout": "300" }, { "match": "snetterton" }] },
+    { "name": "Oulton Park Island", "search": "Oulton Park", "country": "England", "tracks": [{ "id": "rt_oulton_park", "layout": "island" }, { "match": "oulton" }] },
+    { "name": "Thruxton", "country": "England", "tracks": [{ "id": "js_thruxton" }, { "match": "thruxton" }] },
+    { "name": "Knockhill", "country": "Scotland", "tracks": [{ "id": "knockhill2017", "layout": "knockhill" }, { "match": "knockhill" }] },
+    { "name": "Donington Park GP", "search": "Donington Park", "country": "England", "tracks": [{ "id": "rj_doningtonpark2023", "layout": "gphr" }, { "id": "doningtonpark2018", "layout": "gp" }, { "match": "donington(?!.*19\\d\\d)" }] },
+    { "name": "Croft", "search": "Croft circuit", "country": "England", "tracks": [{ "match": "(^|[^a-z])croft([^a-z]|$)" }] },
+    { "name": "Silverstone National", "search": "Silverstone", "country": "England", "tracks": [{ "id": "ks_silverstone", "layout": "national" }, { "match": "silverstone(?!.?19\\d\\d)" }] },
+    { "name": "Brands Hatch GP", "search": "Brands Hatch", "country": "England", "tracks": [{ "id": "ks_brands_hatch", "layout": "gp" }, { "match": "brands.?hatch" }] }
+  ]
+}

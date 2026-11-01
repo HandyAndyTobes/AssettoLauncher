@@ -8,7 +8,7 @@
     { "name": "Paul Ricard", "country": "France", "tracks": [{ "id": "jt_paul_ricard", "layout": "gt" }, { "match": "paul.?ricard|castellet" }] },
     { "name": "Monza", "country": "Italy", "tracks": [{ "id": "monza" }, { "id": "ks_monza66", "layout": "full" }, { "match": "monza" }] },
     { "name": "Spa-Francorchamps", "country": "Belgium", "tracks": [{ "id": "spa" }, { "match": "(^|[^a-z])spa([^a-z]|$)|francorchamps" }] },
-    { "name": "Nürburgring", "country": "Germany", "tracks": [{ "id": "ks_nurburgring", "layout": "layout_gp_a" }, { "match": "nurburgring|nuerburgring" }] },
-    { "name": "Portimão", "country": "Portugal", "tracks": [{ "id": "algarve" }, { "match": "portimao|algarve" }] }
+    { "name": "Nürburgring", "search": "Nurburgring GP", "country": "Germany", "tracks": [{ "id": "ks_nurburgring", "layout": "layout_gp_a" }, { "match": "nurburgring|nuerburgring" }] },
+    { "name": "Portimão", "search": "Portimao", "country": "Portugal", "tracks": [{ "id": "algarve" }, { "match": "portimao|algarve" }] }
   ]
 }

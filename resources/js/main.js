@@ -22,8 +22,8 @@ import { IMPORT_RE, resolveDropped, prepareImport, installItem, setItemCar, carC
 import { syncEvoTrackList, restoreEvoTrackList, evoTrackListStatus } from './evotracks.js';
 import { readEvoExtras, readCarPresets, isLazyImage, lazyImage } from './kspkg.js';
 import { lobbyList, serverInfo, serverSlots, serverTrack, trackFinder, serverName, serverKey, savedServers, toggleFavourite, joinServer, steamId, downloadContent, opensInBrowser, pingServers, SESSION_NAMES } from './online.js';
-import { loadSeasons, champProgress, saveChampProgress, newSeason, nextRoundIndex, startRound } from './championships.js';
-import { matchRound, gt3Cars, raceLaps, standings as champStandings, scoreRound, PLAYER } from './championship-core.js';
+import { loadSeasons, champProgress, saveChampProgress, useTestProgress, newSeason, nextRoundIndex, startRound } from './championships.js';
+import { matchRound, gt3Cars, seasonCars, teamsFor, touringGroup, touringModels, raceLaps, standings as champStandings, scoreRound, PLAYER } from './championship-core.js';
 import { latestRelease, isNewer, isInstalledCopy, installUpdate } from './appupdate.js';
 import { esc, timeAgo, openExternal, mapLimit, openFile, openFolder, safeUrl, powershellEncodedCommand, storageGet, storageSet, norm, log, exists, basename, prettifyId, fileUrl, mountDir, listDir, join, run, runningProcesses, stopProcess, readText, writeText, ensureDir, overlayFile, readRaceOut, readLapsIni, CURL, NULL_DEV, IS_LINUX } from './util.js';
 import { tr, trn, N_, loadLanguage, systemLanguage, LANGUAGES, lang } from './i18n.js';
@@ -3628,6 +3628,17 @@ function installsDone() {
   else toast(`Installed ${done.length} mod${done.length > 1 ? 's' : ''}`);
   if (done.some(isEvoListed)) evoTrackSync({ force: true });
   if (state.view === 'academy') { AY.data = {}; drawAcademy(); return; }
+  // A round's missing track: the page again, and the New season dialog it came from.
+  if (state.view === 'championships') {
+    const id = CH.reopen;
+    renderChampionships().then(async () => {
+      const season = id && state.view === 'championships' && (await chSeasons()).find(x => x.id === id);
+      if (!season || (await champProgress()).running[season.id]) return;
+      const g = gameByKey('ac');
+      chSetup(season, await getItems(g, 'tracks'), await getItems(g, 'cars'));
+    });
+    return;
+  }
   // A server's missing content: back to that server, now with it installed.
   if (state.view === 'online') {
     const s = OL.reopen;
@@ -5148,7 +5159,8 @@ function resultCard(ev, r, res) {
 // ---------------------------------------------------------------------------
 // Championships (championships.js, championship-core.js)
 
-const CH = { seasons: null };
+// open: the series whose season is shown ('' the menu of all of them).
+const CH = { seasons: null, reopen: '', open: '' };
 // Cached once some loaded: an empty list (a failed fetch) is tried again next time.
 const chSeasons = async () => {
   if (CH.seasons?.length) return CH.seasons;
@@ -5161,12 +5173,45 @@ const chName = name => (name === PLAYER ? tr('You') : name);
 // line): the substitutes for a round whose track isn't installed.
 const chTrackOptions = tracks => tracks.flatMap(t => t.playable === false ? [] : t.layouts.filter(l => l.aiLine).map(l => ({ track: t.id, layout: l.id, title: t.title, layoutName: l.name })));
 const chOptLabel = o => `${o.title}${o.layoutName && o.layoutName !== o.title ? ` · ${o.layoutName}` : ''}`;
+// A round whose track isn't installed: Find searches the web for it (the round's
+// `search`, else its name). Free tracks are mostly shared on Google Drive, Dropbox,
+// MediaFire or Yandex Disk, which the launcher downloads itself (online.js
+// downloadContent) from a pasted link, no account needed; a file already
+// downloaded goes in through Install a downloaded track (or a drop on the window).
+// Either way the page comes back with the round matched.
+const chFindUrl = r => `https://www.google.com/search?q=${encodeURIComponent(`${r.search || r.name} assetto corsa track download`)}`;
+const chFindHTML = r => `<button class="btn small subtle ch-find" data-ch-find="${esc(chFindUrl(r))}" title="${esc(tr('Search the web for this track. Copy its download link into the box below, or download it and install the file.'))}">${tr('Find')} ↗</button>`;
+const chGetHTML = () => `<div class="ch-get">
+  <form class="ch-link" data-ch-link><input class="search" type="url" placeholder="${esc(tr('Paste a download link (Drive, Dropbox, MediaFire…)'))}" required><button class="btn small subtle" type="submit">${tr('Download and install')}</button></form>
+  <button class="btn small subtle" type="button" data-ch-install title="${esc(tr('Pick the track you downloaded (.zip, .rar, .7z): the launcher installs it. Dropping it on the window works too.'))}">${sxIcon('import')}${tr('Install a downloaded track…')}</button>
+  <small>${esc(tr('Missing a track? Find searches the web for it. Paste its download link here, or download it and install the file: the round picks it up.'))}</small></div>`;
+// Their clicks, on the page or in the New season dialog (reopen: that season's
+// id, so the dialog comes back once the install is done).
+function chGetClicks(el, reopen = '') {
+  el.addEventListener('click', e => {
+    const find = e.target.closest('[data-ch-find]');
+    if (find) { openExternal(find.dataset.chFind); return; }
+    if (e.target.closest('[data-ch-install]')) { CH.reopen = reopen; pickModFiles(); }
+  });
+  el.addEventListener('submit', e => {
+    const form = e.target.closest('[data-ch-link]');
+    if (!form) return;
+    e.preventDefault();
+    const url = form.querySelector('input').value.trim();
+    if (!safeUrl(url)) { toast(tr("That isn't a web link."), true); return; }
+    if (opensInBrowser(url)) { toast(tr('Mega links only download in the browser: open it there, then install the file.'), true); openExternal(url); return; }
+    CH.reopen = reopen;
+    // A Drive or Dropbox link names no file ("view", "file"): a plain label then.
+    const file = decodeURIComponent(basename(url.split(/[?#]/)[0]));
+    importSources([{ url, name: /\.(zip|rar|7z)$/i.test(file) ? file : tr('Track download') }]);
+  });
+}
 
 // AC closed after a round: score it from race_out.json, save it, say how it went.
 async function championshipClosed(l) {
   const p = await champProgress();
-  const a = p.active;
-  if (!a || a.seasonId !== l.championship.seasonId) return;
+  const a = p.running[l.championship.seasonId];
+  if (!a) return;
   const season = (await chSeasons()).find(s => s.id === a.seasonId);
   if (!season) return;
   const index = l.championship.round;
@@ -5193,7 +5238,7 @@ async function championshipClosed(l) {
     const rows = champStandings(season, a);
     const me = rows.find(r => r.player);
     p.history = [{ seasonId: a.seasonId, name: season.name, car: a.car, rank: rows.indexOf(me) + 1, points: me.points, at: Date.now() }, ...p.history];
-    p.active = null;
+    delete p.running[a.seasonId];
   }
   await saveChampProgress(p);
   if (state.view === 'championships') renderChampionships();
@@ -5207,15 +5252,74 @@ function chResultCard(season, a, result, before, finished) {
   modal(`<div class="ch-card">
     <div class="ch-card-sub">${esc(season.name)} · ${esc(tr('Round {n}', { n: result.round + 1 }))} · ${esc(a.rounds[result.round].name)}</div>
     <h2>${esc(tr(finished ? 'Season finished' : 'Round finished'))}</h2>
-    <div class="ch-card-big"><b>P${result.pos}</b><span>${esc(trn(result.points, '1 point', '{n} points'))}${result.pole === PLAYER ? ` · ${esc(tr('pole'))}` : ''}</span></div>
+    <div class="ch-card-big"><b>P${result.pos}</b><span>${esc(trn(result.points, '1 point', '{n} points'))}${result.pole === PLAYER ? ` · ${esc(tr('pole'))}` : ''}${result.fastest === PLAYER ? ` · ${esc(tr('fastest lap'))}` : ''}</span></div>
     <p>${esc(tr(finished ? 'Final position: P{n} with {pts} points.' : 'Championship: P{n} with {pts} points.', { n: now, pts: rows[now - 1].points }))} ${change ? `<span class="ch-change">${change}</span>` : ''}</p>
     <ol class="ch-mini">${rows.slice(0, 5).map(r => `<li class="${r.player ? 'me' : ''}"><span>${esc(chName(r.name))}</span><b>${r.points}</b></li>`).join('')}</ol>
   </div>`, 'modal ch-modal');
 }
 
-// The page: the season running (calendar and standings side by side, the next
-// round with Start), or with none the series card with New season and past seasons.
+// The menu's row for a series: its name and class, a sentence on where it stands,
+// one action (Continue, or New season), and the season strip: a segment per round,
+// raced (your place), next, ready, missing a track, or dropped; a round's name and
+// track on hover. Missing tracks are got from a dialog (chMissingDialog), not here.
+function chSeriesRow(season, run, tracks, cars, carTitle) {
+  const cls = season.class || 'GT3';
+  const seg = (state, label, tip) => `<span class="seg ${state}" title="${esc(tip)}">${esc(label)}</span>`;
+  if (run) {
+    const rows = champStandings(season, run);
+    const me = rows.findIndex(r => r.player) + 1;
+    const next = nextRoundIndex(run);
+    const strip = run.rounds.map((r, i) => {
+      const res = run.results.find(x => x.round === i);
+      const t = tracks.find(x => x.id === r.track);
+      const tip = `${tr('Round {n}', { n: i + 1 })}: ${r.name}`;
+      if (r.dropped) return seg('dropped', i + 1, `${tip} (${tr('dropped')})`);
+      if (res) return seg('done', `P${res.pos}`, `${tip}, ${tr('finished P{pos} for {pts} points', { pos: res.pos, pts: res.points })}`);
+      return seg(i === next ? 'next' : t ? 'ready' : 'missing', i + 1, `${tip}${t ? `, ${t.title}` : `, ${tr('track not installed')}`}`);
+    }).join('');
+    return `<section class="ch-row live">
+      <div class="ch-row-main"><div class="ch-row-title"><h2>${esc(season.name)}</h2><span class="ch-tag">${esc(cls)}</span><span class="ch-tag live">${tr('In progress')}</span></div>
+        <p>${esc(tr("You're P{pos} with {pts} points in the {car}.", { pos: me, pts: rows[me - 1].points, car: carTitle(run.car) }))}${next >= 0 ? ` ${esc(tr('Next up: {round}.', { round: run.rounds[next].name }))}` : ''}</p></div>
+      <button class="btn primary" data-ch-open="${esc(season.id)}">${tr('Continue')}</button>
+      <div class="ch-strip" style="--n:${run.rounds.length}">${strip}</div>
+    </section>`;
+  }
+  const pool = seasonCars(season, cars);
+  const ready = pool.player.length && pool.models.length;
+  const matched = season.rounds.map(r => matchRound(r, tracks).best);
+  const missing = matched.filter(m => !m).length;
+  const strip = season.rounds.map((r, i) => seg(matched[i] ? 'ready' : 'missing', i + 1, `${tr('Round {n}', { n: i + 1 })}: ${r.name}, ${matched[i] ? chOptLabel(matched[i]) : tr('track not installed')}`)).join('');
+  return `<section class="ch-row">
+    <div class="ch-row-main"><div class="ch-row-title"><h2>${esc(season.name)}</h2><span class="ch-tag">${esc(cls)}</span></div>
+      <p>${esc(trn(season.rounds.length, 'One round: practice, qualifying and a race.', '{n} rounds, each with practice, qualifying and a race.'))}</p></div>
+    <button class="btn primary" data-ch-new="${esc(season.id)}" ${ready ? '' : 'disabled'}>${tr('New season')}</button>
+    <div class="ch-strip" style="--n:${season.rounds.length}">${strip}</div>
+    ${ready && !missing ? '' : `<div class="ch-row-foot">
+      ${ready ? '' : `<span class="ch-warn">${esc(tr("No {cls} car with AI data is installed, so there's no grid to race.", { cls }))}</span>`}
+      ${missing ? `<span>${esc(trn(missing, '1 track isn\'t installed: get it, or swap or drop the round when you start.', "{n} tracks aren't installed: get them, or swap or drop those rounds when you start."))}</span>
+      <button class="btn small subtle" data-ch-missing="${esc(season.id)}">${tr('Get missing tracks')}</button>` : ''}
+    </div>`}
+  </section>`;
+}
+
+// The rounds of a series whose track isn't installed, each with Find, and the
+// ways to install one (a pasted link, a downloaded file).
+function chMissingDialog(season, tracks) {
+  const rounds = season.rounds.map((r, i) => ({ r, i })).filter(({ r }) => !matchRound(r, tracks).best);
+  const { el } = modal(`<div class="qd ch-get-dialog">
+    <header class="qd-head"><h2>${esc(tr('Missing tracks'))}</h2><div class="qd-sub">${esc(season.name)}</div></header>
+    <p class="ch-get-lead">${esc(tr('Find searches the web for a track. Paste its download link below, or download it and install the file. The round picks it up once it is installed.'))}</p>
+    <div class="ch-get-list">${rounds.map(({ r, i }) => `<div class="ch-get-round"><b>${i + 1}</b><span>${esc(r.name)}<small>${esc(r.country || '')}</small></span>${chFindHTML(r)}</div>`).join('')}</div>
+    ${chGetHTML()}
+  </div>`, 'modal ch-modal wide');
+  chGetClicks(el);
+}
+
+// The page: the menu, a card per series (New season, or Continue for one in
+// progress, with where it's at) and past seasons; or, opened from it (CH.open),
+// a season: calendar and standings side by side, the next round with Start.
 async function renderChampionships() {
+  CH.reopen = ''; // a New season dialog to bring back is read before this runs
   const g = gameByKey('ac');
   if (!isInstalled(g) || !state.paths?.ac?.install) {
     main.innerHTML = `<div class="view scaled"><div class="page">${olOtherGameNote('This page runs Assetto Corsa championships. For {game}, career and championships are in the game itself.')}<div class="empty"><h3>${tr('Assetto Corsa not found')}</h3>${tr('Championships are raced in Assetto Corsa, installed through Steam.')}</div></div></div>`;
@@ -5227,53 +5331,67 @@ async function renderChampionships() {
   const [seasons, p, tracks, cars] = await Promise.all([chSeasons(), champProgress(), getItems(g, 'tracks'), getItems(g, 'cars')]);
   if (state.view !== 'championships') return;
   const wrap = $('#ch-wrap');
-  const season = seasons[0];
-  const a = p.active;
-  if (!season) { wrap.innerHTML = `<div class="empty">${tr('No championships found.')}</div>`; return; }
+  if (!seasons.length) { wrap.innerHTML = `<div class="empty">${tr('No championships found.')}</div>`; return; }
+  const carTitle = id => cars.find(c => c.id === id)?.title || id;
+  const a = p.running[CH.open];
+  const season = a && seasons.find(s => s.id === a.seasonId);
 
-  if (!a) {
-    const gt3 = gt3Cars(cars);
-    const matched = season.rounds.map(r => matchRound(r, tracks).best);
-    wrap.innerHTML = `<div class="ch-series">
-      <div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2><p>${esc(trn(season.rounds.length, '1 round', '{n} rounds'))} · GT3 · ${esc(tr('practice, qualifying and race each round'))}</p></div>
-        <button class="btn primary" id="ch-new" ${gt3.player.length && gt3.models.length ? '' : 'disabled'}>${tr('New season')}</button></div>
-      ${gt3.models.length ? '' : `<p class="ch-warn">${tr("No GT3 car with AI data is installed, so there's no grid to race.")}</p>`}
-      <div class="ch-rounds">${season.rounds.map((r, i) => `<div class="ch-round ${matched[i] ? '' : 'off'}">
-        <b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${matched[i] ? esc(`${matched[i].title}${matched[i].layoutName && matched[i].layoutName !== matched[i].title ? ` · ${matched[i].layoutName}` : ''}`) : esc(tr('Not installed: pick another track or drop it when you start'))}</small></div>
-        <span class="ch-badge ${matched[i] ? 'ok' : 'warn'}">${matched[i] ? '✓' : tr('Missing')}</span></div>`).join('')}</div>
-      ${p.history.length ? `<div class="section-title">${tr('Past seasons')}</div><div class="ch-history">${p.history.map(h => `<div><span>${esc(h.name)}</span><small>${esc(cars.find(c => c.id === h.car)?.title || h.car)} · ${esc(timeAgo(h.at))}</small><b>P${h.rank} · ${h.points}</b></div>`).join('')}</div>` : ''}
+  if (!a || !season) {
+    CH.open = '';
+    wrap.innerHTML = `<div class="ch-menu">
+      <header class="ch-menu-head"><h1>${tr('Championships')}</h1><p>${esc(tr('A season of races against the same AI grid, with points carried from round to round.'))}</p></header>
+      ${seasons.map(x => chSeriesRow(x, p.running[x.id], tracks, cars, carTitle)).join('')}
+      ${p.history.length ? `<section class="ch-past"><h3>${tr('Past seasons')}</h3>${p.history.map(h => `<div><span>${esc(h.name)}</span><small>${esc(carTitle(h.car))}, ${esc(timeAgo(h.at))}</small><b>P${h.rank}</b><b>${esc(trn(h.points, '1 pt', '{n} pts'))}</b></div>`).join('')}</section>` : ''}
     </div>`;
-    $('#ch-new')?.addEventListener('click', () => chSetup(season, tracks, cars));
+    wrap.querySelectorAll('[data-ch-new]').forEach(b => b.addEventListener('click', () => chSetup(seasons.find(s => s.id === b.dataset.chNew), tracks, cars)));
+    wrap.querySelectorAll('[data-ch-open]').forEach(b => b.addEventListener('click', () => { CH.open = b.dataset.chOpen; renderChampionships(); }));
+    wrap.querySelectorAll('[data-ch-missing]').forEach(b => b.addEventListener('click', () => chMissingDialog(seasons.find(s => s.id === b.dataset.chMissing), tracks)));
     return;
   }
 
   const rows = champStandings(season, a);
   const me = rows.findIndex(r => r.player) + 1;
   const next = nextRoundIndex(a);
-  const carTitle = id => cars.find(c => c.id === id)?.title || id;
   // The next round's track removed since the season began: pick a substitute or drop it.
   const options = chTrackOptions(tracks);
   const missing = next >= 0 && !options.some(o => o.track === a.rounds[next].track && o.layout === a.rounds[next].layout);
-  const picker = `<div class="ch-missing"><select id="ch-sub"><option value="">${esc(tr('Drop this round'))}</option>${options.map(o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(chOptLabel(o))}</option>`).join('')}</select><button class="btn small" id="ch-use">${esc(tr('Use'))}</button></div>`;
-  wrap.innerHTML = `<div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2>
-      <p>${esc(carTitle(a.car))} · ${esc(trn(a.grid.length, '1 AI car', '{n} AI cars'))} · ${esc(tr('{n} min races', { n: a.settings.raceMinutes }))}</p></div>
+  // Its own circuit installed since (another folder name): picked already.
+  const own = missing ? matchRound(season.rounds[next] || {}, tracks).best : null;
+  const isOwn = o => own && o.track === own.track && o.layout === own.layout;
+  const picker = `<div class="ch-missing"><select id="ch-sub"><option value="">${esc(tr('Drop this round'))}</option>${options.map(o => `<option value="${esc(`${o.track}|${o.layout}`)}" ${isOwn(o) ? 'selected' : ''}>${esc(chOptLabel(o))}</option>`).join('')}</select><button class="btn small" id="ch-use">${esc(tr('Use'))}</button>${own ? '' : chFindHTML(season.rounds[next] || a.rounds[next])}</div>`;
+  // A dropped round not raced yet: back in once its circuit is installed.
+  const back = a.rounds.map((r, i) => (r.dropped && !a.results.some(x => x.round === i) && season.rounds[i] ? matchRound(season.rounds[i], tracks).best : null));
+  const dropped = a.rounds.some((r, i) => r.dropped && !back[i] && !a.results.some(x => x.round === i));
+  wrap.innerHTML = `<button class="btn small subtle ch-back" id="ch-back">← ${tr('All championships')}</button>
+    <div class="ch-head">${logoHTML(g)}<div><h2>${esc(season.name)}</h2>
+      <p>${esc(carTitle(a.car))}${a.team ? ` · ${esc(a.team)}` : ''} · ${esc(trn(a.grid.length, '1 AI car', '{n} AI cars'))} · ${esc(tr('{n} min races', { n: a.settings.raceMinutes }))}</p></div>
       <span class="ch-badge">P${me} · ${rows[me - 1].points} ${tr('pts')}</span></div>
     <div class="ch-dash">
       <div class="ch-col"><div class="section-title">${tr('Calendar')}</div>${a.rounds.map((r, i) => {
         const res = a.results.find(x => x.round === i);
         const t = tracks.find(x => x.id === r.track);
         const cls = r.dropped ? 'dropped' : res ? 'done' : i === next ? `next${missing ? ' off' : ''}` : 'later';
-        const right = r.dropped ? `<span class="ch-badge">${tr('Dropped')}</span>`
-          : res ? `<span class="ch-badge ok">P${res.pos} · ${res.points}${res.pole === PLAYER ? ` · ${tr('pole')}` : ''}</span>`
+        const right = r.dropped ? (back[i] ? `<button class="btn small subtle" data-ch-back="${i}" title="${esc(chOptLabel(back[i]))}">${tr('Add back')}</button>` : !res && season.rounds[i] ? chFindHTML(season.rounds[i]) : `<span class="ch-badge">${tr('Dropped')}</span>`)
+          : res ? `<span class="ch-badge ok">P${res.pos} · ${res.points}${res.pole === PLAYER ? ` · ${tr('pole')}` : ''}${res.fastest === PLAYER ? ` · ${tr('fastest lap')}` : ''}</span>`
           : i === next && missing ? `<span class="ch-badge warn">${esc(tr('Missing'))}</span>`
           : i === next ? `<button class="btn primary" data-launch-game="ac" id="ch-start">▶ ${tr('Start round')}</button>` : '';
         const where = i === next && missing ? esc(tr('Track not installed — pick another or drop this round')) : `${esc(t ? t.title : r.track)}${r.layout ? ` · ${esc(r.layout)}` : ''}`;
-        return `<div class="ch-round ${cls}"><b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${where}</small></div>${right}</div>${i === next && missing ? picker : ''}`;
-      }).join('')}</div>
-      <div class="ch-col"><div class="section-title">${tr('Standings')}</div><table class="ch-table">${rows.map((r, i) => `<tr class="${r.player ? 'me' : ''}"><td>${i + 1}</td><td>${esc(chName(r.name))}</td><td class="muted">${esc(carTitle(r.car))}</td><td class="n">${r.points}</td></tr>`).join('')}</table></div>
+        return `<div class="ch-round ${cls}"><b>${i + 1}</b><div><span>${esc(r.name)}</span><small>${r.dropped ? esc(back[i] ? tr('Dropped · its track is installed now') : tr('Dropped')) : where}</small></div>${right}</div>${i === next && missing ? picker : ''}`;
+      }).join('')}${missing || dropped ? chGetHTML() : ''}</div>
+      <div class="ch-col"><div class="section-title">${tr('Standings')}</div><table class="ch-table">${rows.map((r, i) => `<tr class="${r.player ? 'me' : ''}"><td>${i + 1}</td><td>${esc(chName(r.name))}</td><td class="muted">${esc(r.team || carTitle(r.car))}</td><td class="n">${r.points}</td></tr>`).join('')}</table></div>
     </div>
     <button class="btn small subtle" id="ch-abandon">${tr('Abandon season')}</button>`;
   syncRunning(wrap);
+  chGetClicks(wrap);
+  $('#ch-back').addEventListener('click', () => { CH.open = ''; renderChampionships(); });
+  wrap.querySelectorAll('[data-ch-back]').forEach(b => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.chBack), m = back[i];
+    b.disabled = true;
+    a.rounds = a.rounds.map((x, k) => (k === i ? { ...x, track: m.track, layout: m.layout, dropped: false } : x));
+    log(`championship round ${i + 1}: added back on ${m.track}/${m.layout}`);
+    await saveChampProgress(p);
+    renderChampionships();
+  }));
   $('#ch-use')?.addEventListener('click', async e => {
     const v = $('#ch-sub').value;
     const [track, layout] = v.split('|');
@@ -5288,7 +5406,7 @@ async function renderChampionships() {
       const rows = champStandings(season, a);
       const mine = rows.find(x => x.player);
       p.history = [{ seasonId: a.seasonId, name: season.name, car: a.car, rank: rows.indexOf(mine) + 1, points: mine.points, at: Date.now() }, ...p.history];
-      p.active = null;
+      delete p.running[a.seasonId];
     }
     await saveChampProgress(p);
     renderChampionships();
@@ -5312,7 +5430,9 @@ async function renderChampionships() {
   $('#ch-abandon').addEventListener('click', async e => {
     const b = e.currentTarget;
     if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = tr('Click again to abandon'); setTimeout(() => { delete b.dataset.armed; b.textContent = tr('Abandon season'); }, 4000); return; }
-    p.active = null;
+    log(`championship: abandoned ${a.seasonId} (${a.results.length} rounds raced, started ${new Date(a.startedAt).toISOString()})`);
+    delete p.running[a.seasonId];
+    CH.open = '';
     await saveChampProgress(p);
     renderChampionships();
   });
@@ -5321,25 +5441,33 @@ async function renderChampionships() {
 // New season: car and skin, grid, AI, race length, and each round's track
 // (matched, a layout choice, or a substitute / Drop for a missing one).
 function chSetup(season, tracks, cars) {
-  const gt3 = gt3Cars(cars);
+  const pool = seasonCars(season, cars);
+  const formula = season.category === 'formula', touring = season.category === 'touring';
   const withAi = chTrackOptions(tracks);
   const optLabel = chOptLabel;
-  const maxGrid = gt3.models.length * 2;
-  const sizes = [15, 20, 25].filter(n => n <= maxGrid);
+  // GT3: at most 2 cars a model. Formula: teams come round again when there are few.
+  // Touring: the car's group, perModel of each (the grid is as big as they allow).
+  const maxGrid = formula || touring ? 63 : pool.models.length * 2;
+  const sizes = (season.gridSizes || [15, 20, 25]).filter(n => n <= maxGrid);
   if (!sizes.length) sizes.push(maxGrid);
+  const wantSize = Math.min(season.gridDefault || 20, sizes[sizes.length - 1]);
+  const teamsOf = id => teamsFor(cars.find(c => c.id === id) || { id, skins: [] }, pool.models);
+  const classmates = id => touringModels(cars.find(c => c.id === id) || { id, tags: [] }, pool.models);
   const matches = season.rounds.map(r => matchRound(r, tracks));
   const { el, close } = modal(`<div class="qd ch-setup">
     <header class="qd-head"><h2>${esc(season.name)}</h2><div class="qd-sub">${tr('Choose once for the whole season.')}</div></header>
     <div class="ch-form">
-      <label>${tr('Your car')}<select id="chs-car">${gt3.player.map(c => `<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')}</select></label>
+      <label>${tr('Your car')}<select id="chs-car">${pool.player.map(c => `<option value="${esc(c.id)}">${esc(c.title)}${touring ? ` · ${esc(touringGroup(c))}` : ''}</option>`).join('')}</select></label>
       <label>${tr('Skin')}<select id="chs-skin"></select></label>
-      <label>${tr('AI cars')}<select id="chs-grid">${sizes.map(n => `<option ${n === Math.min(20, sizes[sizes.length - 1]) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>${tr('AI cars')}<select id="chs-grid">${sizes.map(n => `<option ${n === wantSize ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label>${tr('AI strength')} <span id="chs-level-v">90%</span><input type="range" id="chs-level" min="70" max="100" value="90"></label>
       <label>${tr('AI aggression')} <span id="chs-agg-v">30%</span><input type="range" id="chs-agg" min="0" max="100" value="30"></label>
       <label>${tr('Race length')}<select id="chs-min">${[20, 30, 45, 60].map(n => `<option value="${n}" ${n === 30 ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
       <label class="ch-check"><input type="checkbox" id="chs-prac" checked> ${tr('10 min practice before qualifying')}</label>
     </div>
+    ${formula || touring ? '<p class="ch-teams" id="chs-teams"></p>' : ''}
     <div class="section-title">${tr('Rounds')}</div>
+    ${matches.some(m => !m.best) ? chGetHTML() : ''}
     <div class="ch-setup-rounds">${season.rounds.map((r, i) => {
       const m = matches[i];
       // The round's own track first; any other track with an AI line can stand in
@@ -5347,8 +5475,8 @@ function chSetup(season, tracks, cars) {
       const own = new Set(m.options.map(o => `${o.track}|${o.layout}`));
       const option = o => `<option value="${esc(`${o.track}|${o.layout}`)}">${esc(optLabel(o))}</option>`;
       const others = withAi.filter(o => !own.has(`${o.track}|${o.layout}`)).map(option).join('');
-      return `<div class="ch-round ${m.best ? '' : 'off'}"><b>${i + 1}</b><div><span>${esc(r.name)}</span>${m.best ? '' : `<small>${esc(tr('Not installed: pick another track, or drop the round'))}</small>`}</div>
-        <select data-chs-round="${i}">${m.best ? m.options.map(option).join('') : ''}<option value="">${esc(tr('Drop this round'))}</option>${others ? `<optgroup label="${esc(tr('Other tracks'))}">${others}</optgroup>` : ''}</select></div>`;
+      return `<div class="ch-round ${m.best ? '' : 'off'}"><b>${i + 1}</b><div><span>${esc(r.name)}</span>${m.best ? '' : `<small>${esc(tr('Not installed: find it, pick another track, or drop the round'))}</small>`}</div>
+        ${m.best ? '' : chFindHTML(r)}<select data-chs-round="${i}">${m.best ? m.options.map(option).join('') : ''}<option value="">${esc(tr('Drop this round'))}</option>${others ? `<optgroup label="${esc(tr('Other tracks'))}">${others}</optgroup>` : ''}</select></div>`;
     }).join('')}</div>
     <div class="ch-actions"><span class="ch-laps" id="chs-laps"></span><button class="btn primary" id="chs-go">${tr('Start season')}</button></div>
   </div>`, 'modal ch-modal wide');
@@ -5356,16 +5484,29 @@ function chSetup(season, tracks, cars) {
   const skins = () => {
     const c = cars.find(x => x.id === el.querySelector('#chs-car').value);
     el.querySelector('#chs-skin').innerHTML = (c?.skins || []).map(s => `<option value="${esc(s.id)}">${esc(prettifyId(s.id))}</option>`).join('');
+    // Who the grid is: the touring group's cars; teams of two in this car's
+    // liveries, or a pack's cars.
+    if (touring) {
+      const mates = c ? classmates(c.id) : [];
+      el.querySelector('#chs-teams').textContent = tr('{group} grid: {cars}. Up to {n} cars.', { group: touringGroup(c || {}), cars: mates.map(m => m.title).join(', '), n: mates.length * (season.perModel || 2) });
+      return;
+    }
+    if (!formula) return;
+    const teams = c ? teamsOf(c.id) : [];
+    el.querySelector('#chs-teams').textContent = teams.some(t => t.model !== c.id)
+      ? tr('Teams of two: the {n} cars of this pack, you in one of them.', { n: teams.length })
+      : tr('Teams of two, everyone in a {car}: {n} teams, you in one of them.', { car: c?.title || '', n: teams.length });
   };
   const laps = () => {
     const min = Number(el.querySelector('#chs-min').value);
     const parts = [...el.querySelectorAll('[data-chs-round]')].map(s => {
       const [t, l] = s.value.split('|');
       const layout = tracks.find(x => x.id === t)?.layouts.find(x => x.id === l);
-      return layout ? raceLaps(min, layout.length) : null;
+      return layout ? raceLaps(min, layout.length, season.speed) : null;
     }).filter(Boolean);
     el.querySelector('#chs-laps').textContent = parts.length ? tr('About {a}–{b} laps a race', { a: Math.min(...parts), b: Math.max(...parts) }) : '';
   };
+  chGetClicks(el, season.id);
   el.querySelector('#chs-car').addEventListener('change', skins);
   el.querySelector('#chs-min').addEventListener('change', laps);
   el.querySelectorAll('[data-chs-round]').forEach(s => s.addEventListener('change', laps));
@@ -5384,8 +5525,12 @@ function chSetup(season, tracks, cars) {
     let p;
     try {
       p = await champProgress();
-      p.active = newSeason(season, {
-        car: el.querySelector('#chs-car').value, skin: el.querySelector('#chs-skin').value, rounds, models: gt3.models,
+      // One season per series: one in progress (another window started it) stays.
+      if (p.running[season.id]) throw new Error(tr('A {name} season is already in progress: continue it, or abandon it first.', { name: season.name }));
+      p.running[season.id] = newSeason(season, {
+        car: el.querySelector('#chs-car').value, skin: el.querySelector('#chs-skin').value, rounds,
+        models: touring ? classmates(el.querySelector('#chs-car').value) : pool.models,
+        teams: formula ? teamsOf(el.querySelector('#chs-car').value) : null,
         settings: { gridSize: Number(el.querySelector('#chs-grid').value), level: Number(el.querySelector('#chs-level').value), aggression: Number(el.querySelector('#chs-agg').value), raceMinutes: Number(el.querySelector('#chs-min').value), practice: el.querySelector('#chs-prac').checked },
       });
       await saveChampProgress(p);
@@ -5394,10 +5539,12 @@ function chSetup(season, tracks, cars) {
       go.disabled = false;
       return;
     }
-    log(`championship: new ${season.id} with ${p.active.car}, grid ${p.active.grid.length}`);
+    log(`championship: new ${season.id} with ${p.running[season.id].car}, grid ${p.running[season.id].grid.length}`);
     close();
+    CH.open = season.id;
     renderChampionships();
   });
+  return close;
 }
 
 function renderCommunity() {
@@ -6963,12 +7110,36 @@ async function runSnapshots(dir) {
   }
   // --check-championships: the season's track matches, the GT3 cars and a grid,
   // race.ini for round 1 written to a sandbox, a scored sample race, and the
-  // page with no season, mid-season and finished. The real progress is put back.
+  // page with no season, mid-season and finished. Its seasons are saved under a
+  // test key (useTestProgress): the player's progress is never touched.
   if ((window.NL_ARGS || []).includes('--check-championships')) {
     const g = gameByKey('ac');
-    const [season] = await chSeasons();
+    const seasons = await chSeasons();
+    const [season] = seasons;
     const tracks = await getItems(g, 'tracks'), cars = await getItems(g, 'cars');
-    season.rounds.forEach((r, i) => { const m = matchRound(r, tracks); log(`check-champ round ${i + 1} ${r.name}: ${m.best ? `${m.best.track}/${m.best.layout}` : 'missing'} (${m.options.length} options)`); });
+    for (const s of seasons) s.rounds.forEach((r, i) => { const m = matchRound(r, tracks); log(`check-champ ${s.id} round ${i + 1} ${r.name}: ${m.best ? `${m.best.track}/${m.best.layout}` : 'missing'} (${m.options.length} options: ${m.options.slice(0, 4).map(o => `${o.track}/${o.layout}`).join(', ')})`); });
+    // The formula season: its cars, each one's teams, and a grid in the first.
+    for (const s of seasons.filter(x => x.category === 'formula')) {
+      const pool = seasonCars(s, cars);
+      log(`check-champ ${s.id} cars: ${pool.player.length} to drive, ${pool.models.length} with AI: ${pool.player.map(c => `${c.id}(${teamsFor(c, pool.models).length} teams)`).join(', ')}`);
+      const c = pool.player.find(x => x.id === 'rss_formula_hybrid_2024') || pool.player[0];
+      if (c) {
+        const a = newSeason(s, { car: c.id, skin: c.skins[0]?.id || '', rounds: [], models: pool.models, teams: teamsFor(c, pool.models), settings: { gridSize: s.gridDefault || 19, level: 90, aggression: 30, raceMinutes: 30, practice: true } });
+        log(`check-champ ${s.id} grid in ${c.id}, you in ${a.team}: ${a.grid.map(x => `${x.name}/${x.team}/${x.skin}`).join(', ')}`);
+      }
+      const pack = pool.player.find(x => teamsFor(x, pool.models).some(t => t.model !== x.id));
+      if (pack) log(`check-champ ${s.id} pack ${pack.id}: ${teamsFor(pack, pool.models).map(t => `${t.name}[${t.skins.join('/')}]`).join(', ')}`);
+    }
+    // The touring season: each car's group, and a grid in a TCR car (else the first).
+    for (const s of seasons.filter(x => x.category === 'touring')) {
+      const pool = seasonCars(s, cars);
+      log(`check-champ ${s.id} cars: ${pool.player.map(c => `${c.id}[${touringGroup(c)}]`).join(', ')}`);
+      const c = pool.player.find(x => touringGroup(x) === 'TCR') || pool.player[0];
+      if (c) {
+        const a = newSeason(s, { car: c.id, skin: c.skins[0]?.id || '', rounds: [], models: touringModels(c, pool.models), settings: { gridSize: s.gridDefault || 19, level: 90, aggression: 30, raceMinutes: 20, practice: true } });
+        log(`check-champ ${s.id} grid in ${c.id}: ${a.grid.map(x => `${x.name}/${x.model}/${x.skin}`).join(', ')}`);
+      }
+    }
     const gt3 = gt3Cars(cars);
     log(`check-champ gt3: ${gt3.player.length} cars, ${gt3.models.length} models with AI: ${gt3.models.map(c => c.id).join(', ')}`);
     if (!gt3.player.length || !gt3.models.length) {
@@ -6976,8 +7147,8 @@ async function runSnapshots(dir) {
       await Neutralino.app.exit();
       return;
     }
-    // The real progress is overwritten below: put back whatever happens.
-    const saved = await champProgress();
+    // Seasons saved from here go under the test key, never over the player's.
+    useTestProgress();
     try {
     const rounds =season.rounds.map(r => { const b = matchRound(r, tracks).best; return { name: r.name, track: b?.track || '', layout: b?.layout || '', dropped: !b }; });
     const a = newSeason(season, { car: gt3.player[0].id, skin: gt3.player[0].skins[0]?.id || '', rounds, models: gt3.models, settings: { gridSize: 20, level: 90, aggression: 30, raceMinutes: 30, practice: true } });
@@ -6993,24 +7164,54 @@ async function runSnapshots(dir) {
     const race = (laps, lead) => ({ sessions: [{ type: 2, bestLaps: [{ car: order[0], time: 100000 }] }, { type: 3, lapsCount: 15, lapstotal: Array(n).fill(laps).map((v, i) => (i === order[0] ? lead : v)), raceResult: order }] });
     log(`check-champ finished: ${JSON.stringify(scoreRound(season, a, race(15, 15), first))}`);
     log(`check-champ quit: ${JSON.stringify(scoreRound(season, a, race(4, 4), first).reason)}`);
-    await saveChampProgress({ active: null, history: [] });
+    await saveChampProgress({ running: {}, history: [] });
+    CH.open = '';
     state.view = 'championships'; render(); await wait(2500); await snap('champ-none');
+    // The formula season's New season dialog: its cars, the teams line, the rounds.
+    const formula = seasons.find(x => x.category === 'formula');
+    if (formula && seasonCars(formula, cars).player.length) {
+      const closeSetup = chSetup(formula, tracks, cars);
+      await wait(800); await snap('champ-setup-formula');
+      log(`check-champ setup ${formula.id}: ${$('#chs-car')?.selectedOptions[0]?.textContent} | ${$('#chs-teams')?.textContent} | ${$('#chs-laps')?.textContent}`);
+      closeSetup();
+    }
+    // A series with a track missing (one made up): its row's footer, and the dialog.
+    {
+      const fake = { ...season, id: 'check-missing', name: `${season.name} (check)`, rounds: [...season.rounds, { name: 'Nowhere Ring', country: 'Testland', tracks: [{ id: 'no_such_track_x' }] }] };
+      $('.ch-menu')?.insertAdjacentHTML('beforeend', chSeriesRow(fake, null, tracks, cars, id => id));
+      await wait(500); await snap('champ-menu-missing');
+      chMissingDialog(fake, tracks);
+      await wait(800); await snap('champ-missing-tracks');
+      log(`check-champ missing tracks dialog: ${document.querySelectorAll('.ch-get-round').length} rounds, link box ${$('[data-ch-link]') ? 'shown' : 'NOT shown'}`);
+      $('#modal-root [data-close]')?.click();
+    }
+    const touring = seasons.find(x => x.category === 'touring');
+    if (touring && seasonCars(touring, cars).player.length) {
+      const closeSetup = chSetup(touring, tracks, cars);
+      await wait(800); await snap('champ-setup-touring');
+      log(`check-champ setup ${touring.id}: ${$('#chs-car')?.selectedOptions[0]?.textContent} | ${$('#chs-teams')?.textContent} | ${$('#chs-laps')?.textContent} | grid sizes ${[...$('#chs-grid').options].map(o => o.value).join('/')}`);
+      closeSetup();
+    }
     a.results = [scoreRound(season, a, race(15, 15), first).result];
-    await saveChampProgress({ active: a, history: [] });
-    render(); await wait(2500); await snap('champ-mid');
+    await saveChampProgress({ running: { [a.seasonId]: a }, history: [] });
+    // The menu with this season in progress, then the season opened from it.
+    render(); await wait(2500); await snap('champ-menu');
+    log(`check-champ menu: continue ${$('[data-ch-open]') ? 'shown' : 'NOT shown'} for ${$('[data-ch-open]')?.dataset.chOpen}, new season for ${[...document.querySelectorAll('[data-ch-new]')].map(b => b.dataset.chNew).join(', ')}`);
+    $('[data-ch-open]')?.click(); await wait(2500); await snap('champ-mid');
+    log(`check-champ opened: back ${$('#ch-back') ? 'shown' : 'NOT shown'}, start ${$('#ch-start') ? 'shown' : 'hidden'}`);
     log(`check-champ standings: ${champStandings(season, a).slice(0, 5).map(r => `${chName(r.name)} ${r.points}`).join(', ')}`);
     // The next round's track gone since the season began: the substitute picker.
     const gone = nextRoundIndex(a);
     if (gone >= 0) {
-      await saveChampProgress({ active: { ...a, rounds: a.rounds.map((r, i) => (i === gone ? { ...r, track: 'no_such_track_x', layout: '' } : r)) }, history: [] });
+      await saveChampProgress({ running: { [a.seasonId]: { ...a, rounds: a.rounds.map((r, i) => (i === gone ? { ...r, track: 'no_such_track_x', layout: '' } : r)) } }, history: [] });
       render(); await wait(2500); await snap('champ-missing');
       log(`check-champ missing: picker ${$('#ch-sub') ? `shown with ${$('#ch-sub').options.length} options` : 'NOT shown'}, start button ${$('#ch-start') ? 'shown' : 'hidden'}`);
     }
     } catch (err) {
       log(`check-champ failed: ${err?.stack || err}`);
     } finally {
-      await saveChampProgress(saved);
-      log('check-champ: real progress put back');
+      await saveChampProgress(null);
+      log('check-champ: done, test progress cleared');
     }
     await Neutralino.app.exit();
     return;

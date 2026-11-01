@@ -4,7 +4,8 @@
 //
 // A season (data/championships/*.json): { id, name, category, points[], pole,
 // rounds: [{ name, country, tracks: [{ id, layout? } | { match }] }] }.
-// The AI grid is built once per season: [{ name, nation, model, skin, level }].
+// The AI grid is built once per season: [{ name, nation, model, skin, level, team? }]
+// (a formula season's drivers are in teams of two; the player's is active.team).
 // A round's result: { round, pos, pole (name), points, order: [names], at };
 // the player is PLAYER in names.
 
@@ -98,15 +99,118 @@ export function gt3Cars(cars) {
   return { player, models: [...best.values()] };
 }
 
-// Race laps for about `minutes` of GT3 racing on a track `length` long
-// (ui_track.json: "5793 m", "7.0 km", "5,8km"; unknown: 5 km), at the 175 km/h
-// a GT3 car averages on these circuits. At least 3.
-export function raceLaps(minutes, length) {
-  const m = /([\d.,]+)\s*(km|m)?/i.exec(String(length || ''));
+// Formula cars: single-seaters tagged as Grand Prix / F1 / Formula cars, or of
+// an "F1" class. Plain "singleseater" isn't enough (hillclimb specials, LMP3s,
+// a safety car and Formula Mazda-type trainers carry it too), nor is Formula E.
+const isSingle = c => ['singleseater', 'single seater', 'openwheel', 'open wheeler'].some(n => tagIs(c, n));
+const isFormula = c => isSingle(c) && !tagIs(c, 'formula e')
+  && (['gp', 'f1', 'formula 1', 'formula'].some(n => tagIs(c, n)) || /\bf1\b/i.test(c.carClass || ''));
+// A pack: cars released as one grid (asr_1991_ferrari_643, asr_1991_williams_fw14...),
+// the same first two id words and the same year. Kunos' own (ks_) aren't a pack.
+const packKey = c => {
+  const w = low(c.id).split('_');
+  return w.length > 2 && w[0] !== 'ks' && c.year ? `${w[0]}_${w[1]}|${c.year}` : '';
+};
+// player: every formula car with a grid to race (a team of its own in
+// teamsFor, so it has AI data too). models: the ones with AI data.
+export function formulaCars(cars) {
+  const all = cars.filter(isFormula);
+  const models = all.filter(c => c.ai);
+  const player = all.filter(c => teamsFor(c, models).some(t => t.model === c.id));
+  return { player: player.sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0)), models };
+}
+
+// Skins as teams. Driver liveries of one team share a first word
+// (MCL39_4_Norris, MCL39_81_Piastri; numbers before it skipped: 00_fh_2024_24):
+// when some do, that word is the team. Otherwise each skin is a team.
+const teamWord = s => String(s).split(/[_\s-]+/).find(w => /[a-z]/i.test(w)) || '';
+function skinTeams(model, skins) {
+  const groups = new Map();
+  for (const s of skins) {
+    const k = low(teamWord(s));
+    groups.set(k, [...(groups.get(k) || []), s]);
+  }
+  if (![...groups.values()].some(g => g.length > 1)) return skins.map(s => ({ model, skins: [s], name: prettySkin(s) }));
+  return [...groups.values()].map(g => {
+    const w = teamWord(g[0]);
+    return { model, skins: g, name: /\d/.test(w) ? w.toUpperCase() : prettySkin(w) };
+  });
+}
+
+// The teams of a formula season in `car`, two drivers each, as in F1. In a pack
+// of 3 or more cars with AI, each car is a team (its first two skins its two
+// drivers', named by its title less the pack's shared "ASR Formula 1991 - ");
+// otherwise the whole grid is `car` (it needs AI) and its skins make the teams.
+export function teamsFor(car, models) {
+  const key = packKey(car);
+  const pack = key ? models.filter(m => packKey(m) === key) : [];
+  const skinsOf = m => (m.skins.length ? m.skins.map(s => s.id) : ['']);
+  if (pack.length >= 3) {
+    // The "... - " most of the pack's titles start with (one may be titled otherwise).
+    const heads = pack.map(m => String(m.title || '')).map(t => (t.includes(' - ') ? t.slice(0, t.lastIndexOf(' - ') + 3) : ''));
+    const head = heads.filter(h => h && heads.filter(x => x === h).length > 1)[0] || '';
+    const name = m => (head && String(m.title).startsWith(head) ? String(m.title).slice(head.length) : m.title || m.id);
+    return pack.map(m => ({ model: m.id, skins: skinsOf(m).slice(0, 2), name: name(m) }));
+  }
+  const own = models.find(m => m.id === car.id);
+  return own ? skinTeams(own.id, skinsOf(own)) : [];
+}
+
+// A formula grid: `size` cars in teams of two. The player's team (the car and
+// skin chosen) has one AI teammate; the other teams follow, shuffled, every team
+// once before any comes back (a car with fewer skins than the grid needs).
+// Each driver has a `team` name; names and levels as buildGrid.
+export function buildTeamGrid(teams, { car, skin, size, level, rand = Math.random }) {
+  const mine = playerTeam(teams, car, skin);
+  if (!mine) return [];
+  const seats = [{ team: mine, skin: mine.skins.find(s => s !== skin) || skin }];
+  const others = shuffle(teams.filter(t => t !== mine), rand);
+  const pool = others.length ? others : [mine];
+  while (seats.length < size) for (const t of pool) for (let k = 0; k < 2 && seats.length < size; k++) seats.push({ team: t, skin: t.skins[k % t.skins.length] });
+  const names = shuffle(NAMES, rand);
+  return seats.slice(0, size).map(({ team, skin: s }, i) => {
+    const [name, nation] = names[i % names.length].split(',');
+    return { name, nation, model: team.model, skin: s, team: team.name, level: Math.min(100, Math.round(level - 3 + rand() * 6)) };
+  });
+}
+// The player's team: the one in their car and skin, else the first in their car.
+export const playerTeam = (teams, car, skin) => teams.find(t => t.model === car && t.skins.includes(skin)) || teams.find(t => t.model === car) || null;
+// A skin folder as a team name: "red_bull_racing_01" → "Red Bull Racing".
+export const prettySkin = id => String(id || '').replace(/[_-]+/g, ' ').replace(/\b\d+\b/g, '').replace(/\s+/g, ' ').trim().replace(/\b\w/g, m => m.toUpperCase()) || 'Team';
+
+// Touring cars: a grid is one rulebook's cars, as a real touring car series is
+// (TCR, or a BTCC era: NGTC from 2011, the 2000s, Super Touring and before), so a
+// car's group is what it races against. '' for any other car.
+export function touringGroup(c) {
+  if (tagIs(c, 'tcr') || low(c.carClass) === 'tcr' || /(^|_)tcr(_|$)/i.test(c.id)) return 'TCR';
+  if (!['btcc', 'ngtc'].some(n => tagIs(c, n)) && !/btcc|ngtc/i.test(c.id)) return '';
+  const y = Number(c.year) || 0;
+  return y >= 2011 ? 'BTCC NGTC' : y >= 2001 ? 'BTCC 2000s' : 'BTCC 1990s';
+}
+// The models a touring season in `car` races: its group's cars with AI data.
+export const touringModels = (car, models) => models.filter(m => touringGroup(m) && touringGroup(m) === touringGroup(car));
+// player: touring cars with a grid (their group has a car with AI); models: those with AI.
+export function touringCars(cars) {
+  const all = cars.filter(c => touringGroup(c) && !isRoad(c));
+  const models = all.filter(c => c.ai);
+  const player = all.filter(c => touringModels(c, models).length);
+  return { player: player.sort((a, b) => touringGroup(a).localeCompare(touringGroup(b)) || String(a.title).localeCompare(String(b.title))), models };
+}
+
+// A season's cars: { player, models } for its category ("gt3", "formula" or "touring").
+export const seasonCars = (season, cars) => (season.category === 'formula' ? formulaCars(cars) : season.category === 'touring' ? touringCars(cars) : gt3Cars(cars));
+
+// Race laps for about `minutes` of racing on a track `length` long
+// (ui_track.json: "5793 m", "7.0 km", "5,8km", "2.176 miles"; unknown: 5 km), at `kmh`, the
+// season's average speed (a GT3 car's 175 km/h on these circuits by default).
+// At least 3.
+export function raceLaps(minutes, length, kmh = 175) {
+  const m = /([\d.,]+)\s*(km|mi|m)?/i.exec(String(length || ''));
   let km = m ? Number(m[1].replace(',', '.')) : 0;
-  if (m && (low(m[2]) === 'm' || km > 100)) km /= 1000;
+  if (m && low(m[2]) === 'mi') km *= 1.609;
+  else if (m && (low(m[2]) === 'm' || km > 100)) km /= 1000;
   if (!(km > 0.5)) km = 5;
-  return Math.max(3, Math.round(minutes * 175 / 60 / km));
+  return Math.max(3, Math.round(minutes * kmh / 60 / km));
 }
 
 const shuffle = (list, rand) => {
@@ -115,12 +219,12 @@ const shuffle = (list, rand) => {
   return a;
 };
 
-// The season's AI grid: `size` cars (at most 2 per model), every model once
-// before any gets a second; a model's two cars wear different skins. Names
-// from NAMES, no repeats; AI level `level` ± 3 (at most 100).
-export function buildGrid(models, { size, level, rand = Math.random }) {
+// The season's AI grid: `size` cars (at most `perModel` per model, 2 by default),
+// every model once before any gets a second; a model's cars wear different skins
+// while it has them. Names from NAMES, no repeats; AI level `level` ± 3 (at most 100).
+export function buildGrid(models, { size, level, perModel = 2, rand = Math.random }) {
   const order = shuffle(models, rand), picks = [];
-  for (let pass = 0; pass < 2; pass++) for (const m of order) if (picks.length < size) picks.push(m);
+  for (let pass = 0; pass < perModel; pass++) for (const m of order) if (picks.length < size) picks.push(m);
   const names = shuffle(NAMES, rand), firstSkin = new Map(), count = new Map();
   return picks.map((m, i) => {
     const skins = m.skins.length ? m.skins.map(s => s.id) : [''];
@@ -135,7 +239,8 @@ export function buildGrid(models, { size, level, rand = Math.random }) {
 // Car index (race_out.json: 0 the player, 1..n the grid in race.ini order) to name.
 const nameOf = (active, car) => (car === 0 ? PLAYER : active.grid[car - 1]?.name || `#${car}`);
 
-// The fastest in a qualifying session: its bestLaps, else its laps (cut laps don't count).
+// The fastest in a session (qualifying: pole; the race: fastest lap): its
+// bestLaps, else its laps (cut laps don't count). '' when it has neither.
 function poleOf(active, quali) {
   const laps = quali?.bestLaps?.length ? quali.bestLaps : (quali?.laps || []).filter(l => !l.cuts);
   const best = laps.filter(l => l.time > 0).sort((a, b) => a.time - b.time)[0];
@@ -171,15 +276,17 @@ export function scoreRound(season, active, out, round, playerLaps = 0) {
   const quali = [...sessions].reverse().find(s => Number(s.type) === 2);
   const pole = poleOf(active, quali);
   const pos = order.indexOf(0) + 1;
-  const points = (season.points[pos - 1] || 0) + (pole === PLAYER ? season.pole || 0 : 0);
-  return { result: { round, pos, pole, points, order: order.map(c => nameOf(active, c)), at: Date.now() }, reason: '' };
+  // A fastest lap point (season.fastestLap) when the race session has its laps.
+  const fastest = season.fastestLap ? poleOf(active, race) : '';
+  const points = (season.points[pos - 1] || 0) + (pole === PLAYER ? season.pole || 0 : 0) + (fastest === PLAYER ? season.fastestLap : 0);
+  return { result: { round, pos, pole, ...(fastest ? { fastest } : {}), points, order: order.map(c => nameOf(active, c)), at: Date.now() }, reason: '' };
 }
 
 // Everyone's points over the saved rounds, best first: more points, then more
 // wins, then the better best finish.
 export function standings(season, active) {
-  const rows = new Map([[PLAYER, { name: PLAYER, car: active.car, points: 0, wins: 0, best: 99, player: true }]]);
-  for (const g of active.grid) rows.set(g.name, { name: g.name, car: g.model, points: 0, wins: 0, best: 99, player: false });
+  const rows = new Map([[PLAYER, { name: PLAYER, car: active.car, team: active.team || '', points: 0, wins: 0, best: 99, player: true }]]);
+  for (const g of active.grid) rows.set(g.name, { name: g.name, car: g.model, team: g.team || '', points: 0, wins: 0, best: 99, player: false });
   for (const r of active.results || []) {
     r.order.forEach((name, i) => {
       const row = rows.get(name);
@@ -189,6 +296,7 @@ export function standings(season, active) {
       row.best = Math.min(row.best, i + 1);
     });
     if (rows.has(r.pole)) rows.get(r.pole).points += season.pole || 0;
+    if (r.fastest && rows.has(r.fastest)) rows.get(r.fastest).points += season.fastestLap || 0;
   }
   return [...rows.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || a.best - b.best);
 }
